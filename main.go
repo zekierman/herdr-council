@@ -95,7 +95,7 @@ func (m model) Init() tea.Cmd { return tea.Batch(fetchAgents(m.workspace), tick(
 func (m *model) resize() {
 	m.input.SetWidth(max(20, m.w-4))
 	m.answer.SetWidth(max(20, m.w-2))
-	m.answer.SetHeight(max(3, m.h-8))
+	m.answer.SetHeight(max(3, m.h-10))
 	m.refreshAnswer()
 }
 
@@ -386,7 +386,7 @@ func (m model) verdictBody(wrap lipgloss.Style) string {
 	r, j := m.run, m.run.Judge
 	switch {
 	case j.State == Done:
-		return wrap.Render(j.Answer) + "\n\n" + dim.Render("revealed: "+strings.Join(r.Reveal(), " · "))
+		return wrap.Render(j.Answer)
 	case j.State == Failed:
 		return bad.Render("the judge could not be reached: " + j.Err)
 	case !j.Sent.IsZero() && j.State == Blocked:
@@ -452,7 +452,7 @@ func (s *screen) blank()             { s.lines = append(s.lines, "") }
 func (s *screen) raw(block, action string) {
 	for _, l := range strings.Split(block, "\n") {
 		if action != "" {
-			s.zones = append(s.zones, zone{len(s.lines), 0, 1 << 30, action})
+			s.zones = append(s.zones, zone{len(s.lines), 0, lipgloss.Width(l), action})
 		}
 		s.lines = append(s.lines, l)
 	}
@@ -461,16 +461,25 @@ func (s *screen) raw(block, action string) {
 // layout builds the screen and its click zones together, so clicks always match what's drawn.
 func (m model) layout() screen {
 	var sc screen
-	width := max(20, m.w-1)
-	rule := dim.Render(" " + strings.Repeat("─", width-1))
+	width := max(20, m.w)
+	rule := dim.Render(" " + strings.Repeat("─", width-2))
 	if m.phase == asking {
-		sc.add(seg(" "+bold.Render("council")), seg(dim.Render("  every agent answers on its own, then a judge weighs them blind")))
+		sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten("  /  one question, independent answers, blind verdict", width-9))))
+		if width >= 70 && m.h >= 28 {
+			for _, line := range councilArt {
+				sc.add(seg(accent.Render(line)))
+			}
+		} else {
+			sc.add(seg(" " + dim.Render("Ask once. Compare independent views.")))
+		}
 		sc.blank()
+		sc.add(seg(" "+accent.Render("01")+"  "+bold.Render("Ask")), seg(dim.Render("  /  Write the question everyone will answer.")))
 		sc.raw(indent(m.input.View()), "input")
 		sc.blank()
-		sc.add(seg(dim.Render(" seats")))
+		sc.add(seg(" " + accent.Render("02") + "  " + bold.Render("Seats")))
+		sc.add(seg("     " + dim.Render(shorten("Each selected agent answers alone; no seat sees another answer.", width-5))))
 		if m.agentErr != "" {
-			sc.add(seg(" " + bad.Render(m.agentErr)))
+			sc.add(seg(" " + bad.Render(shorten(m.agentErr, width-2))))
 		}
 		if len(m.agents) == 0 && m.agentErr == "" {
 			sc.add(seg(dim.Render("   no agents in this workspace yet")))
@@ -484,65 +493,64 @@ func (m model) layout() screen {
 			if m.onSeats && i == m.cursor {
 				pre = accent.Render(" › ")
 			}
-			sc.add(act(pre+box+" "+fmt.Sprintf("%-8s", a.Name)+" "+dim.Render(a.Status), fmt.Sprintf("toggle:%d", i)))
+			sc.add(act(pre+box+" "+fmt.Sprintf("%-12s", shorten(a.Name, 12))+" "+dim.Render(shorten(a.Status, 13)), fmt.Sprintf("toggle:%d", i)))
 		}
 		sc.blank()
+		sc.add(seg(" " + accent.Render("03") + "  " + bold.Render("Judge")))
+		sc.add(seg("     " + dim.Render(shorten("Reads answers as A/B/C, then writes a verdict without names.", width-5))))
 		judge := "none"
 		if m.judge >= 0 && m.judge < len(m.agents) {
-			judge = m.agents[m.judge].Name
+			judge = shorten(m.agents[m.judge].Name, 14)
 		}
-		sc.add(seg(dim.Render(" judge  ")), act(button.Render("‹ "+judge+" ›"), "judge"), seg(dim.Render("  reads every answer without names, writes the verdict")))
+		sc.add(seg("     "), act(button.Render("‹ "+judge+" ›"), "judge"))
 		sc.blank()
 		sc.add(seg(" "), act(primary.Render("Ask the council"), "ask"), seg("  "), act(button.Render("Close"), "close"))
-		sc.blank()
-		sc.add(seg(dim.Render(" enter ask · tab seats · space toggle · J judge · esc close")))
 		if m.flash != "" {
-			sc.add(seg(" " + warn.Render(m.flash)))
+			sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
 		}
+		for len(sc.lines) < m.h-1 {
+			sc.blank()
+		}
+		sc.add(seg(dim.Render(" enter ask · tab seats · space toggle · J judge · esc close")))
 		return sc
 	}
 
 	now := time.Now()
 	r := m.run
-	head := fmt.Sprintf("  %d/%d answered · judge %s", r.answered(), len(r.Seats), r.Judge.Agent.Name)
-	sc.add(seg(" "+bold.Render("council")), seg(dim.Render(head)))
+	head := fmt.Sprintf("  /  %d of %d seats answered  /  judge: %s", r.answered(), len(r.Seats), r.Judge.Agent.Name)
+	sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten(head, width-10))))
 	q := oneLine(r.Question)
-	if rs := []rune(q); len(rs) > width-5 {
-		q = string(rs[:width-6]) + "…"
+	sc.add(seg(dim.Render(" Q  ")), seg(text.Render(shorten(q, width-5))))
+	sc.add(seg(dim.Render(shorten(" Seats answer independently. The judge sees anonymous letters.", width))))
+	for _, row := range m.tabRows(now, width) {
+		sc.add(row...)
 	}
-	sc.add(seg(dim.Render(" Q ")), seg(text.Render(q)))
-	tabs := [][2]string{seg(" ")}
-	for i, s := range r.Seats {
-		name := fmt.Sprintf("%d %s ", i+1, s.Agent.Name)
-		label, mark := dim.Render(name), " "
-		if i == m.seat {
-			label, mark = bold.Render(name), accent.Render("▍")
-		}
-		tabs = append(tabs, act(mark+label+badge(s, m.frame, now), fmt.Sprintf("seat:%d", i)), seg("   "))
-	}
-	vlabel, vmark := dim.Render("⚖ verdict "), " "
+	sc.add(seg(rule))
 	if m.onVerdict() {
-		vlabel, vmark = bold.Render("⚖ verdict "), accent.Render("▍")
+		sc.add(seg(" " + accent.Render(".----< VERDICT >----.") + "  " + bold.Render(verdictState(r.Judge))))
+		if r.Judge.State == Done {
+			sc.add(seg(" " + good.Render("REVEALED") + "  " + text.Render(shorten(strings.Join(r.Reveal(), "  ·  "), width-12))))
+		}
+	} else {
+		sc.add(seg(" "+bold.Render("ANSWER")), seg(dim.Render("  /  "+r.Seats[m.seat].Agent.Name)))
 	}
-	vb := dim.Render("·")
-	if !r.Judge.Sent.IsZero() {
-		vb = badge(r.Judge, m.frame, now)
-	}
-	tabs = append(tabs, act(vmark+vlabel+vb, fmt.Sprintf("seat:%d", len(r.Seats))))
-	sc.add(tabs...)
-	sc.lines = append(sc.lines, rule)
-	sc.raw(indent(m.answer.View()), "")
-	sc.lines = append(sc.lines, rule)
+	// Reserve the footer first, so wrapped tabs and the reveal never push buttons off-screen.
+	available := max(3, m.h-len(sc.lines)-3)
+	vp := m.answer
+	vp.SetHeight(available)
+	sc.raw(indent(vp.View()), "")
+	sc.add(seg(rule))
 	btns := [][2]string{seg(" "), act(button.Render("Copy"), "copy"), seg(" "), act(button.Render("Go to agent"), "goto")}
 	if r.answered() >= 2 && r.Judge.Sent.IsZero() {
 		btns = append(btns, seg(" "), act(primary.Render("Judge now"), "judge-now"))
 	}
 	btns = append(btns, seg(" "), act(button.Render("New question"), "new"), seg(" "), act(button.Render("Close"), "close"))
-	if m.flash != "" {
-		btns = append(btns, seg("  "+warn.Render(m.flash)))
-	}
 	sc.add(btns...)
-	sc.add(seg(dim.Render(" 1-9 seat · v verdict · ↑↓ scroll · c copy · f agent · j judge now · n new · q close, answers keep coming")))
+	if m.flash != "" {
+		sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
+	} else {
+		sc.add(seg(dim.Render(shorten(" 1-9 seat · v verdict · ↑↓ scroll · c copy · f agent · j judge now · n new · q close", width))))
+	}
 	return sc
 }
 

@@ -20,7 +20,17 @@ contexts = ["workspace"]
 command = ["bin/council.exe", "--open"]
 
 [[actions]]
-id = "open-tab"
-title = "Ask the council (own tab)"
+id = "tab"
+title = "Open the Council tab"
 contexts = ["workspace"]
-command = ["bin/council.exe", "--open", "--placement", "tab"]
+command = ["bin/council.exe", "--ensure-tab"]
+
+[[actions]]
+id = "bind"
+title = "Council: set up a shortcut"
+contexts = ["global"]
+command = ["bin/council.exe", "--bind"]
+
+# Opens a Council tab in every workspace at start, only after `council --auto-tab on`.
+[[startup]]
+command = ["bin/council.exe", "--startup"]
