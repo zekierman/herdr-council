@@ -1,0 +1,26 @@
+id = "herdr-council"
+name = "Council"
+version = "0.1.0"
+description = "Ask every coding agent in the workspace the same question and read their answers side by side."
+min_herdr_version = "0.9.0"
+platforms = ["linux", "macos", "windows"]
+
+[[panes]]
+id = "council"
+title = "Council"
+placement = "popup"
+width = "80%"
+height = "80%"
+command = ["bin/council.exe"]
+
+[[actions]]
+id = "open"
+title = "Ask the council"
+contexts = ["workspace"]
+command = ["bin/council.exe", "--open"]
+
+[[actions]]
+id = "open-tab"
+title = "Ask the council (own tab)"
+contexts = ["workspace"]
+command = ["bin/council.exe", "--open", "--placement", "tab"]
