@@ -1,5 +1,7 @@
 # Council
 
+<p align="center"><img src="docs/council.webp" alt="Council: one question goes to every agent, names are hidden, peers rank the answers, a blind judge weighs them, then the names are revealed" width="100%"></p>
+
 A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every coding agent in your workspace, let each answer on its own, then have a judge agent weigh the answers blind and write one verdict.
 
 1. **Ask.** Write the question once.
