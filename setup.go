@@ -175,9 +175,10 @@ type pane struct {
 	Tab       string `json:"tab_id"`
 	Workspace string `json:"workspace_id"`
 	Label     string `json:"label"`
+	Agent     string `json:"agent"`
 }
 
-func councilPane(workspace string) (*pane, error) {
+func listPanes() ([]pane, error) {
 	out, err := herdr("pane", "list")
 	if err != nil {
 		return nil, err
@@ -190,12 +191,69 @@ func councilPane(workspace string) (*pane, error) {
 	if err := json.Unmarshal(out, &resp); err != nil {
 		return nil, err
 	}
-	for _, p := range resp.Result.Panes {
+	return resp.Result.Panes, nil
+}
+
+func councilPane(workspace string) (*pane, error) {
+	ps, err := listPanes()
+	if err != nil {
+		return nil, err
+	}
+	for _, p := range ps {
 		if p.Label == "Council" && (workspace == "" || p.Workspace == workspace) {
 			return &p, nil
 		}
 	}
 	return nil, nil
+}
+
+// waitCouncil polls until herdr lists the Council pane: opening a tab is asynchronous.
+func waitCouncil(ws string) *pane {
+	for i := 0; i < 20; i++ {
+		if p, err := councilPane(ws); err == nil && p != nil {
+			return p
+		}
+		time.Sleep(150 * time.Millisecond)
+	}
+	return nil
+}
+
+// tidyCouncilTabs closes tabs still named "Council" after the Council pane left them, when all
+// that remains is other plugins' chrome (labelled panes with no agent, e.g. a sidebar).
+// A tab with an agent or a plain shell in it is never closed.
+func tidyCouncilTabs(ws string) {
+	ps, err := listPanes()
+	if err != nil {
+		return
+	}
+	out, err := herdr("tab", "list")
+	if err != nil {
+		return
+	}
+	var resp struct {
+		Result struct {
+			Tabs []struct {
+				ID        string `json:"tab_id"`
+				Workspace string `json:"workspace_id"`
+				Label     string `json:"label"`
+			} `json:"tabs"`
+		} `json:"result"`
+	}
+	json.Unmarshal(out, &resp)
+	for _, t := range resp.Result.Tabs {
+		if t.Workspace != ws || t.Label != "Council" {
+			continue
+		}
+		onlyChrome := true
+		for _, p := range ps {
+			if p.Tab == t.ID && (p.Label == "Council" || p.Label == "" || p.Agent != "") {
+				onlyChrome = false
+			}
+		}
+		if onlyChrome {
+			herdr("tab", "close", t.ID)
+		}
+	}
 }
 
 func focusedTab(workspace string) string {
@@ -266,6 +324,7 @@ func ensureTab(ws string, keepFocus bool) error {
 			herdr("tab", "rename", p.Tab, "Council")
 			return
 		}
+		tidyCouncilTabs(ws) // leftovers from an earlier Council pane
 		back := ""
 		if keepFocus {
 			back = focusedTab(ws)
@@ -277,11 +336,11 @@ func ensureTab(ws string, keepFocus bool) error {
 		if _, err = herdr(open...); err != nil {
 			return
 		}
-		if p, _ = councilPane(ws); p != nil {
+		if p = waitCouncil(ws); p != nil { // inside the lock, so a concurrent ensure sees it
 			herdr("tab", "rename", p.Tab, "Council")
 			setMarker("known", ws)
 		}
-		if back != "" {
+		if back != "" && (p == nil || back != p.Tab) {
 			herdr("tab", "focus", back)
 		}
 	})
@@ -378,6 +437,7 @@ func onEvent() int {
 			if p, err := councilPane(ws); err == nil && p == nil {
 				setMarker("hidden", ws)
 				clearMarker("known", ws)
+				tidyCouncilTabs(ws)
 			}
 		}
 		return 0
