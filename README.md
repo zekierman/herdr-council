@@ -43,7 +43,7 @@ Inside Council, `tab` moves between sections and `?` lists every key. Everything
 
 ## How answers are collected
 
-Each seat is asked to write its answer to a file and end it with a `DONE` line; Council watches the files rather than reading agent screens. If an agent stops at a permission prompt, Council shows it as waiting and "Go to agent" takes you there. Codex in its default sandbox asks once per run before writing outside its workspace; approve it, or start Codex with a sandbox that allows Council's state folder.
+Each seat is asked to write its answer to a file and end it with a `DONE` line; Council watches the files rather than reading agent screens. If an agent stops at a permission prompt, Council shows it as waiting and "Go to agent" takes you there. Codex in its default sandbox asks before writing outside its workspace (once for its answer, once for its review); approve it, or start Codex with a sandbox that allows Council's state folder.
 
 ## License
 
