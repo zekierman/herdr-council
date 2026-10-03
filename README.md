@@ -1,6 +1,7 @@
 # Council
 
 <p align="center"><img src="docs/council.webp" alt="Council: one question goes to every agent, names are hidden, peers rank the answers, a blind judge weighs them, then the names are revealed" width="100%"></p>
+<p align="center"><a href="https://github.com/zekierman/herdr-council/raw/main/docs/council.mp4">▶ Watch with sound</a></p>
 
 A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every coding agent in your workspace, let each answer on its own, then have a judge agent weigh the answers blind and write one verdict.
 
@@ -38,3 +39,5 @@ Each seat is asked to write its answer to a file and end it with a `DONE` line; 
 ## License
 
 MIT
+
+Music in the promo video: "Pulsing Ambient Techno" by BudgetPixel AI (https://budgetpixel.com/background-music/pulsing-ambient-techno-dfd07da3), CC BY 4.0; trimmed with volume automation.
