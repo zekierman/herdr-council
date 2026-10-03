@@ -32,7 +32,7 @@ func (s SeatState) settled() bool { return s != Sending && s != Working && s != 
 
 const (
 	seatDeadline = 10 * time.Minute
-	silentGrace  = 20 * time.Second // idle this long after sending, with no file, counts as Silent
+	silentGrace  = 45 * time.Second // idle this long with no answer counts as Silent; some agents report idle while thinking
 	goneGrace    = 5 * time.Second  // missing from herdr's agent list this long: the pane closed
 	keepRuns     = 7 * 24 * time.Hour
 )
@@ -293,13 +293,18 @@ func pollSeat(s *Seat, now time.Time, status map[string]string) {
 	}
 	if fi, err := os.Stat(s.File); err == nil {
 		size := fi.Size()
-		stable := size > 0 && size == s.lastSize
+		grew := size != s.lastSize
+		stable := size > 0 && !grew
 		s.lastSize = size
 		if stable {
 			if body, ok := readAnswer(s.File, s.Marker); ok {
 				s.Answer, s.State, s.Finished = body, Done, now
 				return
 			}
+		}
+		if size > 0 && grew { // still being written: whatever herdr's status says, it's working
+			s.State, s.idleSince = Working, time.Time{}
+			return
 		}
 	}
 	st := status[s.Agent.Pane]

@@ -929,10 +929,10 @@ func headless(question, seatList, judgeName, ws, peer string) int {
 	var picked []Agent
 	var judge *Agent
 	for i, a := range agents {
-		if (len(want) == 0 && (a.Status == "idle" || a.Status == "done")) || want[a.Name] {
+		if (len(want) == 0 && (a.Status == "idle" || a.Status == "done")) || want[a.Name] || want[a.Pane] {
 			picked = append(picked, a)
 		}
-		if a.Name == judgeName {
+		if a.Name == judgeName || a.Pane == judgeName {
 			judge = &agents[i]
 		}
 	}
@@ -965,6 +965,9 @@ func headless(question, seatList, judgeName, ws, peer string) int {
 	for _, s := range r.Seats {
 		fmt.Printf("== %s (%s, %s)\n%s\n\n", s.Agent.Name, s.State, s.Elapsed(now).Round(time.Second), s.Answer)
 	}
+	if len(r.Ranking) > 0 {
+		fmt.Printf("== peer ranking\n%s\n\n", r.RankingText(true))
+	}
 	if !r.Judge.Sent.IsZero() {
 		fmt.Printf("== verdict by %s (%s, %s)\n%s\n\nrevealed: %s\n\n", r.Judge.Agent.Name, r.Judge.State, r.Judge.Elapsed(now).Round(time.Second), r.Judge.Answer, strings.Join(r.Reveal(), " · "))
 	}
@@ -977,7 +980,7 @@ func main() {
 	open := flag.Bool("open", false, "open the council over the focused pane and exit")
 	placement := flag.String("placement", "", "with --open: popup (default) or tab, a full-size tab that keeps its place")
 	ask := flag.String("ask", "", "ask without the UI and print the answers and the verdict (for scripts and testing)")
-	seats := flag.String("seats", "", "comma-separated agent names to ask with --ask (default: all idle)")
+	seats := flag.String("seats", "", "comma-separated agent names or pane ids to ask with --ask (default: all idle)")
 	judge := flag.String("judge", "claude", "agent name that judges with --ask (default: claude, else the first seat)")
 	peer := flag.String("peer-review", "auto", "with --ask: on, off, or auto (on for up to 6 seats)")
 	flag.Parse()

@@ -82,3 +82,20 @@ func TestAnswerCannotForgeBoundary(t *testing.T) {
 		t.Fatalf("forged boundary survived:\n%s", blind)
 	}
 }
+
+func TestGrowingFileIsNotSilent(t *testing.T) {
+	fakeAgents(t)
+	agents := []Agent{{Name: "agy", Pane: "p1"}}
+	r, _ := newRun("q", agents, agents[0])
+	r.send()
+	s, t0 := r.Seats[0], r.Seats[0].Sent
+	st := map[string]string{"p1": "idle"} // the agent claims idle the whole time
+	r.poll(t0.Add(time.Second), st)
+	for i := 1; i <= 4; i++ { // the answer keeps growing well past the silent grace
+		os.WriteFile(s.File, []byte(strings.Repeat("x", i*10)), 0o644)
+		r.poll(t0.Add(silentGrace+time.Duration(i)*time.Second), st)
+		if s.State != Working {
+			t.Fatalf("poll %d: %v while the file was still growing", i, s.State)
+		}
+	}
+}
