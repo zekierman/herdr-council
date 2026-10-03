@@ -36,6 +36,17 @@ const (
 	watching
 )
 
+type askFocus int
+
+const (
+	focusQuestion askFocus = iota
+	focusSeats
+	focusJudge
+	focusAsk
+	focusClose
+	focusCount
+)
+
 type tickMsg time.Time
 type agentsMsg struct {
 	agents []Agent
@@ -58,7 +69,7 @@ type model struct {
 	agents   []Agent
 	picked   map[string]bool
 	judge    int // index into agents
-	onSeats  bool
+	focus    askFocus
 	cursor   int
 	agentErr string
 
@@ -67,6 +78,7 @@ type model struct {
 	sawVerdict bool
 	answer     viewport.Model
 	flash      string
+	help       bool
 }
 
 func newModel(workspace string) model {
@@ -76,7 +88,7 @@ func newModel(workspace string) model {
 	ta.ShowLineNumbers = false
 	ta.SetHeight(3)
 	ta.Focus()
-	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, answer: viewport.New()}
+	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, focus: focusQuestion, answer: viewport.New()}
 }
 
 func fetchAgents(ws string) tea.Cmd {
@@ -93,13 +105,48 @@ func tick() tea.Cmd {
 func (m model) Init() tea.Cmd { return tea.Batch(fetchAgents(m.workspace), tick()) }
 
 func (m *model) resize() {
-	m.input.SetWidth(max(20, m.w-4))
+	formWidth := m.w
+	if artX, ok := m.artPosition(); ok {
+		formWidth = artX - 3
+	}
+	m.input.SetWidth(max(20, formWidth-4))
 	m.answer.SetWidth(max(20, m.w-2))
 	m.answer.SetHeight(max(3, m.h-10))
 	m.refreshAnswer()
 }
 
 func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if key, ok := msg.(tea.KeyPressMsg); ok {
+		switch key.String() {
+		case "?":
+			m.help = !m.help
+			return m, nil
+		case "ctrl+c":
+			return m, tea.Quit
+		case "esc":
+			if m.help {
+				m.help = false
+				return m, nil
+			}
+		}
+		if m.help {
+			return m, nil
+		}
+	}
+	if m.help {
+		if click, ok := msg.(tea.MouseClickMsg); ok {
+			mo := click.Mouse()
+			if mo.Button == tea.MouseLeft {
+				for _, z := range m.layout().zones {
+					if z.act == "help-close" && mo.Y == z.y && mo.X >= z.x0 && mo.X < z.x1 {
+						m.help = false
+						break
+					}
+				}
+			}
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -175,7 +222,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateWatching(msg)
 	}
-	if m.phase == asking && !m.onSeats {
+	if m.phase == asking && m.focus == focusQuestion {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -188,20 +235,29 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 	switch {
 	case act == "close":
 		return m, tea.Quit
+	case act == "help":
+		m.help = true
+		return m, nil
 	case act == "ask":
+		m.focus = focusAsk
+		m.input.Blur()
 		return m.ask()
 	case act == "input":
-		m.onSeats = false
+		m.focus = focusQuestion
 		return m, m.input.Focus()
 	case strings.HasPrefix(act, "toggle:"):
 		var i int
 		fmt.Sscanf(act, "toggle:%d", &i)
 		if i < len(m.agents) {
+			m.focus = focusSeats
+			m.input.Blur()
 			p := m.agents[i].Pane
 			m.picked[p] = !m.picked[p]
 			m.cursor = i
 		}
 	case act == "judge":
+		m.focus = focusJudge
+		m.input.Blur()
 		if len(m.agents) > 0 {
 			m.judge = (m.judge + 1) % len(m.agents)
 		}
@@ -241,31 +297,74 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "esc":
 		return m, tea.Quit
 	case "tab":
-		m.onSeats = !m.onSeats
-		if m.onSeats {
-			m.input.Blur()
+		return m.moveAskFocus(1)
+	case "shift+tab":
+		return m.moveAskFocus(-1)
+	case "up", "k":
+		if m.focus == focusSeats && m.cursor > 0 {
+			m.cursor--
 			return m, nil
 		}
-		return m, m.input.Focus()
+		if m.focus != focusQuestion || msg.String() == "up" {
+			return m.moveAskFocus(-1)
+		}
+	case "down", "j":
+		if m.focus == focusSeats && m.cursor < len(m.agents)-1 {
+			m.cursor++
+			return m, nil
+		}
+		if m.focus != focusQuestion || msg.String() == "down" {
+			return m.moveAskFocus(1)
+		}
 	case "enter":
-		return m.ask()
-	}
-	if m.onSeats {
-		switch msg.String() {
-		case "up", "k":
-			m.cursor = max(0, m.cursor-1)
-		case "down", "j":
-			m.cursor = min(len(m.agents)-1, m.cursor+1)
-		case "space", "x":
+		switch m.focus {
+		case focusQuestion, focusAsk:
+			return m.ask()
+		case focusSeats:
+			if len(m.agents) > 0 {
+				return m.do(fmt.Sprintf("toggle:%d", m.cursor))
+			}
+		case focusJudge:
+			return m.do("judge")
+		case focusClose:
+			return m.do("close")
+		}
+		return m, nil
+	case "space", "x":
+		if m.focus == focusSeats && len(m.agents) > 0 {
 			return m.do(fmt.Sprintf("toggle:%d", m.cursor))
-		case "J":
+		}
+	case "left", "right":
+		if m.focus == focusJudge {
+			if len(m.agents) > 0 {
+				step := 1
+				if msg.String() == "left" {
+					step = -1
+				}
+				m.judge = (m.judge + len(m.agents) + step) % len(m.agents)
+			}
+			return m, nil
+		}
+	case "J":
+		if m.focus != focusQuestion {
 			return m.do("judge")
 		}
+	}
+	if m.focus != focusQuestion {
 		return m, nil
 	}
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
+}
+
+func (m model) moveAskFocus(step int) (tea.Model, tea.Cmd) {
+	m.focus = (m.focus + askFocus(int(focusCount)+step)) % focusCount
+	if m.focus == focusQuestion {
+		return m, m.input.Focus()
+	}
+	m.input.Blur()
+	return m, nil
 }
 
 func (m model) ask() (tea.Model, tea.Cmd) {
@@ -460,32 +559,36 @@ func (s *screen) raw(block, action string) {
 
 // layout builds the screen and its click zones together, so clicks always match what's drawn.
 func (m model) layout() screen {
+	if m.help {
+		base := m
+		base.help = false
+		return helpOverlay(base.layout(), m.w, m.h)
+	}
 	var sc screen
 	width := max(20, m.w)
 	rule := dim.Render(" " + strings.Repeat("─", width-2))
 	if m.phase == asking {
+		formWidth := width
+		artX, showArt := m.artPosition()
+		if showArt {
+			formWidth = artX - 3
+		}
 		pause := func() {
 			sc.blank()
 			if m.h >= 30 && len(m.agents) <= 3 {
 				sc.blank()
 			}
 		}
-		sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten("  /  one question, independent answers, blind verdict", width-9))))
-		if width >= 70 && m.h >= 28 {
-			for _, line := range councilArt {
-				sc.add(seg(accent.Render(line)))
-			}
-		} else {
-			sc.add(seg(" " + dim.Render("Ask once. Compare independent views.")))
-		}
+		sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten("  /  independent answers, blind verdict", formWidth-9))))
+		sc.add(seg(" " + dim.Render(shorten("Ask once. Compare independent views.", formWidth-1))))
 		pause()
-		sc.add(seg(" "+accent.Render("01")+"  "+bold.Render("Ask")), seg(dim.Render("  /  Write the question everyone will answer.")))
+		addAskHeading(&sc, m.focus == focusQuestion, "01", "Question", "enter", "ask", formWidth)
 		sc.raw(indent(m.input.View()), "input")
 		pause()
-		sc.add(seg(" " + accent.Render("02") + "  " + bold.Render("Seats")))
-		sc.add(seg("     " + dim.Render(shorten("Each selected agent answers alone; no seat sees another answer.", width-5))))
+		addAskHeading(&sc, m.focus == focusSeats, "02", "Seats", "space", "select", formWidth)
+		sc.add(seg("     " + dim.Render(shorten("Each agent answers alone, unseen by the others.", formWidth-5))))
 		if m.agentErr != "" {
-			sc.add(seg(" " + bad.Render(shorten(m.agentErr, width-2))))
+			sc.add(seg(" " + bad.Render(shorten(m.agentErr, formWidth-2))))
 		}
 		if len(m.agents) == 0 && m.agentErr == "" {
 			sc.add(seg(dim.Render("   no agents in this workspace yet")))
@@ -496,28 +599,45 @@ func (m model) layout() screen {
 				box = accent.Render("[x]")
 			}
 			pre := "   "
-			if m.onSeats && i == m.cursor {
+			if m.focus == focusSeats && i == m.cursor {
 				pre = accent.Render(" › ")
 			}
 			sc.add(act(pre+box+" "+fmt.Sprintf("%-12s", shorten(a.Name, 12))+" "+dim.Render(shorten(a.Status, 13)), fmt.Sprintf("toggle:%d", i)))
 		}
 		pause()
-		sc.add(seg(" " + accent.Render("03") + "  " + bold.Render("Judge")))
-		sc.add(seg("     " + dim.Render(shorten("Reads answers as A/B/C, then writes a verdict without names.", width-5))))
+		addAskHeading(&sc, m.focus == focusJudge, "03", "Judge", "←→", "cycle", formWidth)
+		sc.add(seg("     " + dim.Render(shorten("Reads answers as A/B/C, writes the verdict.", formWidth-5))))
 		judge := "none"
 		if m.judge >= 0 && m.judge < len(m.agents) {
 			judge = shorten(m.agents[m.judge].Name, 14)
 		}
-		sc.add(seg("     "), act(button.Render("‹ "+judge+" ›"), "judge"))
-		pause()
-		sc.add(seg(" "), act(primary.Render("Ask the council"), "ask"), seg("  "), act(button.Render("Close"), "close"))
-		if m.flash != "" {
-			sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
+		judgeStyle := button
+		if m.focus == focusJudge {
+			judgeStyle = primary
 		}
-		for len(sc.lines) < m.h-1 {
+		sc.add(seg("     "), act(judgeStyle.Render("‹ "+judge+" ›"), "judge"))
+		pause()
+		askStyle, closeStyle := button, button
+		if m.focus == focusAsk {
+			askStyle = primary
+		}
+		if m.focus == focusClose {
+			closeStyle = primary
+		}
+		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render("Ask the council"), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"))
+		if m.flash != "" {
+			sc.add(seg(" " + warn.Render(shorten(m.flash, formWidth-2))))
+		}
+		legend := askLegend(m.focus, width)
+		for len(sc.lines) < m.h-len(legend) {
 			sc.blank()
 		}
-		sc.add(seg(dim.Render(" enter ask · tab seats · space toggle · J judge · esc close")))
+		for _, row := range legend {
+			sc.add(row...)
+		}
+		if showArt {
+			placeCouncilArt(&sc, artX)
+		}
 		return sc
 	}
 
@@ -541,7 +661,8 @@ func (m model) layout() screen {
 		sc.add(seg(" "+bold.Render("ANSWER")), seg(dim.Render("  /  "+r.Seats[m.seat].Agent.Name)))
 	}
 	// Reserve the footer first, so wrapped tabs and the reveal never push buttons off-screen.
-	available := max(3, m.h-len(sc.lines)-3)
+	legend := watchLegend(width)
+	available := max(3, m.h-len(sc.lines)-3-len(legend))
 	vp := m.answer
 	vp.SetHeight(available)
 	sc.raw(indent(vp.View()), "")
@@ -555,7 +676,10 @@ func (m model) layout() screen {
 	if m.flash != "" {
 		sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
 	} else {
-		sc.add(seg(dim.Render(shorten(" 1-9 seat · v verdict · ↑↓ scroll · c copy · f agent · j judge now · n new · q close", width))))
+		sc.add(seg(""))
+	}
+	for _, row := range legend {
+		sc.add(row...)
 	}
 	return sc
 }

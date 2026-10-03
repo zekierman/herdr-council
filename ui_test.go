@@ -68,10 +68,152 @@ func assertScreen(t *testing.T, m model) {
 }
 
 func TestUILayoutFits(t *testing.T) {
-	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+	for _, size := range [][2]int{{100, 32}, {88, 28}, {60, 24}} {
 		for _, m := range []model{askingModel(size[0], size[1]), watchingModel(size[0], size[1])} {
 			assertScreen(t, m)
 		}
+	}
+	wide := styleEscape.ReplaceAllString(strings.Join(askingModel(100, 32).layout().lines, "\n"), "")
+	narrow := styleEscape.ReplaceAllString(strings.Join(askingModel(60, 24).layout().lines, "\n"), "")
+	if !strings.Contains(wide, strings.TrimSpace(councilArt[3])) || strings.Contains(narrow, strings.TrimSpace(councilArt[3])) {
+		t.Fatal("art should appear only where it fits")
+	}
+}
+
+func TestCouncilArtSymmetry(t *testing.T) {
+	if len(councilArt) != artHeight {
+		t.Fatalf("art height %d", len(councilArt))
+	}
+	for y, row := range councilArt {
+		if len(row) != artWidth {
+			t.Fatalf("row %d width %d", y, len(row))
+		}
+		if row != councilArt[artHeight-1-y] {
+			t.Fatalf("row %d differs from vertical mirror", y)
+		}
+		for x := 0; x < artWidth; x++ {
+			if row[x] != row[artWidth-1-x] {
+				t.Fatalf("art differs at (%d,%d) from horizontal mirror", x, y)
+			}
+		}
+	}
+}
+
+func pressKey(m model, code rune, mod tea.KeyMod) (model, tea.Cmd) {
+	updated, cmd := m.Update(tea.KeyPressMsg{Code: code, Mod: mod})
+	return updated.(model), cmd
+}
+
+func TestAskFocusAndKeys(t *testing.T) {
+	fakeAgents(t)
+	m := askingModel(100, 32)
+	for _, want := range []askFocus{focusSeats, focusJudge, focusAsk, focusClose, focusQuestion} {
+		m, _ = pressKey(m, tea.KeyTab, 0)
+		if m.focus != want {
+			t.Fatalf("tab focus = %d, want %d", m.focus, want)
+		}
+	}
+	m, _ = pressKey(m, tea.KeyTab, tea.ModShift)
+	if m.focus != focusClose {
+		t.Fatalf("shift-tab focus = %d", m.focus)
+	}
+	m, _ = pressKey(m, tea.KeyTab, 0) // question
+	m, _ = pressKey(m, tea.KeyDown, 0)
+	if m.focus != focusSeats {
+		t.Fatalf("down did not enter Seats: %d", m.focus)
+	}
+	m, _ = pressKey(m, tea.KeyDown, 0)
+	if m.cursor != 1 {
+		t.Fatalf("down did not move seat row: %d", m.cursor)
+	}
+	m, _ = pressKey(m, tea.KeyUp, 0)
+	m, _ = pressKey(m, tea.KeyUp, 0)
+	if m.focus != focusQuestion {
+		t.Fatalf("up at first row did not return to Question: %d", m.focus)
+	}
+	m, _ = pressKey(m, tea.KeyTab, 0)
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if m.picked["p1"] {
+		t.Fatal("Enter did not toggle focused seat")
+	}
+	m, _ = pressKey(m, tea.KeySpace, 0)
+	if !m.picked["p1"] {
+		t.Fatal("Space did not toggle focused seat")
+	}
+	m, _ = pressKey(m, tea.KeyTab, 0)
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if m.judge != 2 {
+		t.Fatalf("Enter did not cycle judge: %d", m.judge)
+	}
+	m, _ = pressKey(m, tea.KeyLeft, 0)
+	if m.judge != 1 {
+		t.Fatalf("Left did not cycle judge back: %d", m.judge)
+	}
+	m, _ = pressKey(m, tea.KeyTab, 0) // Ask button
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if m.phase != watching || m.run == nil {
+		t.Fatal("Enter on Ask did not submit")
+	}
+	q := askingModel(100, 32)
+	q, _ = pressKey(q, tea.KeyEnter, 0)
+	if q.phase != watching {
+		t.Fatal("Enter in Question did not ask")
+	}
+	c := askingModel(100, 32)
+	c.focus = focusClose
+	_, cmd := pressKey(c, tea.KeyEnter, 0)
+	if cmd == nil {
+		t.Fatal("Enter on Close did not quit")
+	}
+}
+
+func TestHelpAndContextHint(t *testing.T) {
+	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+		for focus := focusQuestion; focus < focusCount; focus++ {
+			if rows := askLegend(focus, size[0]); len(rows) != 1 {
+				t.Fatalf("%dx%d focus %d has %d hint rows", size[0], size[1], focus, len(rows))
+			}
+		}
+		m := askingModel(size[0], size[1])
+		questionLines := m.layout().lines
+		questionBar := styleEscape.ReplaceAllString(strings.Join(questionLines[max(0, len(questionLines)-2):], "\n"), "")
+		m, _ = pressKey(m, tea.KeyTab, 0)
+		seatLines := m.layout().lines
+		seatsBar := styleEscape.ReplaceAllString(strings.Join(seatLines[max(0, len(seatLines)-2):], "\n"), "")
+		if questionBar == seatsBar || !strings.Contains(seatsBar, "select") || !strings.Contains(seatsBar, "help") {
+			t.Fatalf("%dx%d context bar did not change: question=%q seats=%q", size[0], size[1], questionBar, seatsBar)
+		}
+		m, _ = pressKey(m, '?', 0)
+		if !m.help || !strings.Contains(styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), ""), "COUNCIL / HELP") {
+			t.Fatal("? did not open help")
+		}
+		assertScreen(t, m)
+		m, _ = pressKey(m, '?', 0)
+		if m.help {
+			t.Fatal("? did not close help")
+		}
+		m, _ = pressKey(m, '?', 0)
+		m, _ = pressKey(m, tea.KeyEsc, 0)
+		if m.help {
+			t.Fatal("Esc did not close help")
+		}
+		m, _ = pressKey(m, '?', 0)
+		m = clickAction(t, m, "help-close")
+		if m.help {
+			t.Fatal("help Close button did not close help")
+		}
+		w := watchingModel(size[0], size[1])
+		watchBar := styleEscape.ReplaceAllString(strings.Join(w.layout().lines, "\n"), "")
+		for _, key := range []string{"←→/tab", "1-9", "verdict", "wheel", "copy", "agent", "judge", "new", "close", "help"} {
+			if !strings.Contains(watchBar, key) {
+				t.Fatalf("watching legend missing %q", key)
+			}
+		}
+		w, _ = pressKey(w, '?', 0)
+		if !w.help {
+			t.Fatal("? did not open watching help")
+		}
+		assertScreen(t, w)
 	}
 }
 

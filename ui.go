@@ -8,15 +8,6 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
-// A small round table: independent seats on the left, a judge outside the table.
-var councilArt = []string{
-	"        .----------------.",
-	"   [A] /      ?          \\ [B]",
-	"      |      TABLE        | ----> [J]",
-	"   [C] \\                 /",
-	"        '----------------'",
-}
-
 // shorten works in terminal cells, including wide Unicode characters.
 func shorten(s string, width int) string {
 	if width <= 0 {
