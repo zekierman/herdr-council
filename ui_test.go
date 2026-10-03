@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"path/filepath"
 	"regexp"
 	"strings"
 	"testing"
@@ -268,5 +270,162 @@ func TestUISnapshots(t *testing.T) {
 	} {
 		plain := styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), "")
 		t.Logf("%s screen:\n%s", tc.name, plain)
+	}
+}
+
+func stubWelcomeServices(t *testing.T, existing string) *int {
+	t.Helper()
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	t.Setenv("HERDR_PLUGIN_STATE_DIR", t.TempDir())
+	oldBind, oldCurrent := bindShortcutFn, currentShortcutFn
+	calls := 0
+	bindShortcutFn = func(want string) (string, bool, error) {
+		calls++
+		if want != "" {
+			t.Fatalf("UI requested shortcut %q, want automatic choice", want)
+		}
+		return "prefix+a", false, nil
+	}
+	currentShortcutFn = func() string { return existing }
+	t.Cleanup(func() { bindShortcutFn, currentShortcutFn = oldBind, oldCurrent })
+	return &calls
+}
+
+func sizedLaunch(w, h int) model {
+	m := launchModel("w1")
+	m.w, m.h = w, h
+	m.resize()
+	return m
+}
+
+func TestWelcomeFirstRunAndPersistence(t *testing.T) {
+	stubWelcomeServices(t, "")
+	m := sizedLaunch(100, 32)
+	if m.phase != welcoming || !m.settings.AutoTab || m.settings.Welcomed {
+		t.Fatalf("first launch: phase=%d settings=%+v", m.phase, m.settings)
+	}
+	// Even a resumable run must wait behind the welcome screen.
+	agents := uiAgents()
+	r, err := newRun("prior question", agents[:1], agents[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Seats[0].Sent = time.Now()
+	r.save()
+	if again := sizedLaunch(100, 32); again.phase != welcoming {
+		t.Fatalf("recent run bypassed welcome: %d", again.phase)
+	}
+	m = clickAction(t, m, "welcome-auto")
+	if m.settings.AutoTab || loadSettings().AutoTab {
+		t.Fatal("welcome auto-tab toggle was not saved")
+	}
+	m = clickAction(t, m, "welcome-start")
+	if m.phase != asking || !loadSettings().Welcomed || loadSettings().AutoTab {
+		t.Fatalf("Start did not persist choices: phase=%d settings=%+v", m.phase, loadSettings())
+	}
+	if next := sizedLaunch(100, 32); next.phase == welcoming {
+		t.Fatal("welcome repeated after Start")
+	}
+}
+
+func TestWelcomeShortcutAndClicks(t *testing.T) {
+	calls := stubWelcomeServices(t, "")
+	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+		m := sizedLaunch(size[0], size[1])
+		assertScreen(t, m)
+		m = clickAction(t, m, "welcome-shortcut")
+		if m.shortcut != "prefix+a" || !strings.Contains(m.preferenceNote, "prefix+a") {
+			t.Fatalf("shortcut result not shown: %q %q", m.shortcut, m.preferenceNote)
+		}
+		for _, z := range m.layout().zones {
+			if z.act == "welcome-shortcut" {
+				t.Fatal("bound shortcut button still clickable")
+			}
+		}
+		assertScreen(t, m)
+	}
+	if *calls != 2 {
+		t.Fatalf("bind called %d times", *calls)
+	}
+	// An existing binding is visible immediately and never invokes the binder.
+	currentShortcutFn = func() string { return "prefix+z" }
+	m := sizedLaunch(100, 32)
+	if !strings.Contains(styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), ""), "Council is on prefix+z") {
+		t.Fatal("existing shortcut missing")
+	}
+	m, _ = pressKey(m, tea.KeyTab, 0)
+	if m.welcomeFocus != 2 {
+		t.Fatal("focus did not skip disabled shortcut")
+	}
+}
+
+func TestWelcomeKeyboardAndSettingsOverlay(t *testing.T) {
+	stubWelcomeServices(t, "")
+	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+		if err := saveSettings(Settings{AutoTab: true}); err != nil {
+			t.Fatal(err)
+		}
+		m := sizedLaunch(size[0], size[1])
+		m, _ = pressKey(m, tea.KeyTab, 0)
+		if m.welcomeFocus != 1 {
+			t.Fatal("Tab did not reach Add shortcut")
+		}
+		m, _ = pressKey(m, tea.KeyTab, tea.ModShift)
+		if m.welcomeFocus != 0 {
+			t.Fatal("Shift+Tab did not return to auto-tab")
+		}
+		m, _ = pressKey(m, tea.KeySpace, 0)
+		if m.settings.AutoTab {
+			t.Fatal("Space did not toggle auto-tab")
+		}
+		m, _ = pressKey(m, tea.KeyTab, 0)
+		m, _ = pressKey(m, tea.KeyEnter, 0)
+		if m.shortcut == "" {
+			t.Fatal("Enter did not add shortcut")
+		}
+		m, _ = pressKey(m, tea.KeyEnter, 0) // shortcut success focuses Start
+		if m.phase != asking {
+			t.Fatal("Enter did not Start")
+		}
+		m = clickAction(t, m, "settings")
+		if !m.settingsOpen {
+			t.Fatal("Settings click did not open overlay")
+		}
+		assertScreen(t, m)
+		m = clickAction(t, m, "settings-auto")
+		if !m.settings.AutoTab || !loadSettings().AutoTab {
+			t.Fatal("settings toggle was not saved")
+		}
+		m = clickAction(t, m, "settings-close")
+		if m.settingsOpen {
+			t.Fatal("Settings Close click failed")
+		}
+		m.focus = focusSeats
+		m, _ = pressKey(m, 's', 0)
+		if !m.settingsOpen {
+			t.Fatal("s did not open Settings outside question")
+		}
+		m, _ = pressKey(m, tea.KeyEsc, 0)
+		if m.settingsOpen {
+			t.Fatal("Esc did not close Settings")
+		}
+	}
+}
+
+func TestWelcomeAndSettingsSnapshots(t *testing.T) {
+	stubWelcomeServices(t, "")
+	welcome := sizedLaunch(100, 32)
+	settings := welcome.preferenceAction("welcome-start")
+	settings.settingsOpen = true
+	settings.settingsFocus = 0
+	for _, tc := range []struct {
+		name string
+		m    model
+	}{{"welcome", welcome}, {"settings", settings}} {
+		plain := styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), "")
+		t.Logf("%s screen:\n%s", tc.name, plain)
+	}
+	if _, err := os.Stat(filepath.Join(configDir(), "settings.json")); err != nil {
+		t.Fatal(err)
 	}
 }

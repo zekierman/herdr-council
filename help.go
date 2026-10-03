@@ -90,6 +90,7 @@ var askHelp = []helpEntry{
 	{"space/x", "select seat"},
 	{"←→", "cycle judge"},
 	{"J", "cycle judge"},
+	{"s", "settings (off input)"},
 	{"?", "toggle help"},
 	{"esc", "close"},
 	{"ctrl+c", "quit"},
@@ -134,6 +135,10 @@ func helpOverlay(base screen, width, height int) screen {
 		}
 		panel.add(seg("| " + paddedCell(left, col) + " | " + paddedCell(right, col) + " |"))
 	}
+	panel.add(seg("| " + paddedCell(bold.Render("GETTING BACK TO COUNCIL"), panelWidth-4) + " |"))
+	panel.add(seg("| " + paddedCell(dim.Render("Council tab in Herdr  ·  bound shortcut"), panelWidth-4) + " |"))
+	panel.add(seg("| " + paddedCell(dim.Render("herdr plugin action invoke tab"), panelWidth-4) + " |"))
+	panel.add(seg("| " + paddedCell(dim.Render("  --plugin herdr-council"), panelWidth-4) + " |"))
 	panel.add(seg(dim.Render("+" + strings.Repeat("-", panelWidth-2) + "+")))
 	x, y := max(0, (width-panelWidth)/2), max(0, (height-len(panel.lines))/2)
 	base.zones = nil // only the overlay's Close button is active

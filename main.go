@@ -34,6 +34,7 @@ type phase int
 const (
 	asking phase = iota
 	watching
+	welcoming
 )
 
 type askFocus int
@@ -73,12 +74,18 @@ type model struct {
 	cursor   int
 	agentErr string
 
-	run        *Run
-	seat       int // len(run.Seats) selects the verdict
-	sawVerdict bool
-	answer     viewport.Model
-	flash      string
-	help       bool
+	run            *Run
+	seat           int // len(run.Seats) selects the verdict
+	sawVerdict     bool
+	answer         viewport.Model
+	flash          string
+	help           bool
+	settings       Settings
+	shortcut       string
+	preferenceNote string
+	welcomeFocus   int
+	settingsOpen   bool
+	settingsFocus  int
 }
 
 func newModel(workspace string) model {
@@ -141,6 +148,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					if z.act == "help-close" && mo.Y == z.y && mo.X >= z.x0 && mo.X < z.x1 {
 						m.help = false
 						break
+					}
+				}
+			}
+			return m, nil
+		}
+	}
+	if m.settingsOpen {
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			return m.updateSettings(key)
+		}
+		if click, ok := msg.(tea.MouseClickMsg); ok {
+			mo := click.Mouse()
+			if mo.Button == tea.MouseLeft {
+				for _, z := range m.layout().zones {
+					if mo.Y == z.y && mo.X >= z.x0 && mo.X < z.x1 {
+						return m.do(z.act)
 					}
 				}
 			}
@@ -217,6 +240,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if m.phase == welcoming {
+			return m.updateWelcome(msg)
+		}
 		if m.phase == asking {
 			return m.updateAsking(msg)
 		}
@@ -233,10 +259,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // do runs one named action: shared by keys and mouse clicks.
 func (m model) do(act string) (tea.Model, tea.Cmd) {
 	switch {
+	case strings.HasPrefix(act, "welcome-") || strings.HasPrefix(act, "settings-"):
+		m = m.preferenceAction(act)
+		if act == "settings-close" && m.focus == focusQuestion {
+			return m, m.input.Focus()
+		}
+		return m, nil
 	case act == "close":
 		return m, tea.Quit
 	case act == "help":
 		m.help = true
+		return m, nil
+	case act == "settings":
+		m.settingsOpen = true
+		m.settingsFocus = 0
+		m.preferenceNote = ""
+		m.input.Blur()
 		return m, nil
 	case act == "ask":
 		m.focus = focusAsk
@@ -284,6 +322,7 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 	case act == "new":
 		nm := newModel(m.workspace)
 		nm.w, nm.h, nm.agents, nm.picked, nm.judge = m.w, m.h, m.agents, m.picked, m.judge
+		nm.settings, nm.shortcut = m.settings, m.shortcut
 		nm.resize()
 		return nm, nm.input.Focus()
 	}
@@ -296,6 +335,10 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
 		return m, tea.Quit
+	case "s":
+		if m.focus != focusQuestion {
+			return m.do("settings")
+		}
 	case "tab":
 		return m.moveAskFocus(1)
 	case "shift+tab":
@@ -564,6 +607,14 @@ func (m model) layout() screen {
 		base.help = false
 		return helpOverlay(base.layout(), m.w, m.h)
 	}
+	if m.settingsOpen {
+		base := m
+		base.settingsOpen = false
+		return m.settingsOverlay(base.layout())
+	}
+	if m.phase == welcoming {
+		return m.welcomeLayout()
+	}
 	var sc screen
 	width := max(20, m.w)
 	rule := dim.Render(" " + strings.Repeat("─", width-2))
@@ -624,7 +675,7 @@ func (m model) layout() screen {
 		if m.focus == focusClose {
 			closeStyle = primary
 		}
-		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render("Ask the council"), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"))
+		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render("Ask the council"), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"), seg("  "), act(button.Render("⚙ Settings"), "settings"))
 		if m.flash != "" {
 			sc.add(seg(" " + warn.Render(shorten(m.flash, formWidth-2))))
 		}
@@ -785,11 +836,7 @@ func main() {
 	if w == "" {
 		w = currentWorkspace()
 	}
-	m := newModel(w)
-	if r := latestRun(30 * time.Minute); r != nil {
-		m.run, m.phase = r, watching
-		m.sawVerdict = r.Judge != nil && r.Judge.State == Done
-	}
+	m := launchModel(w)
 	if _, err := tea.NewProgram(m).Run(); err != nil {
 		fmt.Fprintln(os.Stderr, "council:", err)
 		os.Exit(1)
