@@ -20,8 +20,8 @@ Requires herdr 0.9 or newer, on Windows, macOS or Linux. The install step downlo
 
 The first time it opens, Council explains itself and asks how you want to come back to it.
 
-- **Click:** Council keeps a tab named **Council** in each workspace. Closing it hides it until the next herdr start; turn this off in Council's settings (⚙) or with `council --auto-tab off`.
-- **Shortcut:** use "Add shortcut" in the welcome screen or settings, or run `council --bind`. It picks a key that is free in both herdr's defaults and your config (usually `prefix+a`), adds it and reloads herdr.
+- **Click:** Council keeps a tab named **Council** in each workspace. Closing it hides it until the next herdr start; turn this off in Council's settings (⚙).
+- **Shortcut:** use "Add shortcut" in the welcome screen or settings, or run `herdr plugin action invoke bind --plugin herdr-council`. It picks a key that is free in both herdr's defaults and your config (usually `prefix+a`), adds it and reloads herdr.
 - **Command line:** `herdr plugin action invoke tab --plugin herdr-council`
 
 herdr doesn't let plugins add items to its right-click menu, so Council isn't there.
