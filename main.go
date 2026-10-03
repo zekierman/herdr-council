@@ -464,6 +464,12 @@ func (m model) layout() screen {
 	width := max(20, m.w)
 	rule := dim.Render(" " + strings.Repeat("─", width-2))
 	if m.phase == asking {
+		pause := func() {
+			sc.blank()
+			if m.h >= 30 && len(m.agents) <= 3 {
+				sc.blank()
+			}
+		}
 		sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten("  /  one question, independent answers, blind verdict", width-9))))
 		if width >= 70 && m.h >= 28 {
 			for _, line := range councilArt {
@@ -472,10 +478,10 @@ func (m model) layout() screen {
 		} else {
 			sc.add(seg(" " + dim.Render("Ask once. Compare independent views.")))
 		}
-		sc.blank()
+		pause()
 		sc.add(seg(" "+accent.Render("01")+"  "+bold.Render("Ask")), seg(dim.Render("  /  Write the question everyone will answer.")))
 		sc.raw(indent(m.input.View()), "input")
-		sc.blank()
+		pause()
 		sc.add(seg(" " + accent.Render("02") + "  " + bold.Render("Seats")))
 		sc.add(seg("     " + dim.Render(shorten("Each selected agent answers alone; no seat sees another answer.", width-5))))
 		if m.agentErr != "" {
@@ -495,7 +501,7 @@ func (m model) layout() screen {
 			}
 			sc.add(act(pre+box+" "+fmt.Sprintf("%-12s", shorten(a.Name, 12))+" "+dim.Render(shorten(a.Status, 13)), fmt.Sprintf("toggle:%d", i)))
 		}
-		sc.blank()
+		pause()
 		sc.add(seg(" " + accent.Render("03") + "  " + bold.Render("Judge")))
 		sc.add(seg("     " + dim.Render(shorten("Reads answers as A/B/C, then writes a verdict without names.", width-5))))
 		judge := "none"
@@ -503,7 +509,7 @@ func (m model) layout() screen {
 			judge = shorten(m.agents[m.judge].Name, 14)
 		}
 		sc.add(seg("     "), act(button.Render("‹ "+judge+" ›"), "judge"))
-		sc.blank()
+		pause()
 		sc.add(seg(" "), act(primary.Render("Ask the council"), "ask"), seg("  "), act(button.Render("Close"), "close"))
 		if m.flash != "" {
 			sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
