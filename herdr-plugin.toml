@@ -5,6 +5,16 @@ description = "Ask every coding agent in the workspace the same question and rea
 min_herdr_version = "0.9.0"
 platforms = ["linux", "macos", "windows"]
 
+# Install step: download the prebuilt binary for this version (checksum verified), or build it
+# with Go if that fails. The binary is bin/council.exe on every platform.
+[[build]]
+platforms = ["linux", "macos"]
+command = ["/bin/sh", "scripts/fetch-or-build.sh"]
+
+[[build]]
+platforms = ["windows"]
+command = ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", "scripts/fetch-or-build.ps1"]
+
 [[panes]]
 id = "council"
 title = "Council"

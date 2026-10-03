@@ -1,0 +1,39 @@
+name: release
+
+# Pushing a tag like v0.1.0 builds Council for every platform herdr supports and attaches the
+# binaries plus a checksum file to the GitHub release. scripts/fetch-or-build.* download them at
+# plugin install time, so users don't need Go.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+      - name: Test
+        run: go vet ./... && go test ./...
+      - name: Check the tag matches the manifest version
+        run: |
+          want="v$(sed -n 's/^version *= *"\(.*\)"/\1/p' herdr-plugin.toml)"
+          test "$want" = "$GITHUB_REF_NAME" || { echo "tag $GITHUB_REF_NAME != manifest $want"; exit 1; }
+      - name: Build
+        run: |
+          mkdir -p dist
+          for target in windows/amd64 windows/arm64 linux/amd64 linux/arm64 darwin/amd64 darwin/arm64; do
+            os=${target%/*}; arch=${target#*/}
+            ext=""; [ "$os" = windows ] && ext=".exe"
+            CGO_ENABLED=0 GOOS=$os GOARCH=$arch go build -trimpath -ldflags "-s -w" -o "dist/council-$os-$arch$ext" .
+          done
+          cd dist && sha256sum council-* > checksums.txt
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "$GITHUB_REF_NAME" dist/* --title "$GITHUB_REF_NAME" --generate-notes
