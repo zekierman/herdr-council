@@ -41,20 +41,44 @@ title = "Council: set up a shortcut"
 contexts = ["global"]
 command = ["bin/council.exe", "--bind"]
 
-# Keep a Council tab in every workspace (on by default; `council --auto-tab off` or the ⚙ panel turns it off).
+# Keep a Council tab in every workspace (on by default; turn it off in Council's ⚙ settings).
 # Each hook is idempotent: an existing Council tab is left alone, so two never stack up. A tab the
-# user closes stays closed until the next herdr start.
+# user closes stays closed until the next herdr start. On Windows the hooks run a GUI-subsystem
+# build (council-hook.exe) so no console window flashes on every tab switch.
 [[startup]]
+platforms = ["linux", "macos"]
 command = ["bin/council.exe", "--startup"]
+
+[[startup]]
+platforms = ["windows"]
+command = ["bin/council-hook.exe", "--startup"]
 
 [[events]]
 on = "workspace.created"
+platforms = ["linux", "macos"]
+command = ["bin/council.exe", "--event"]
+
+[[events]]
+on = "workspace.created"
+platforms = ["windows"]
+command = ["bin/council-hook.exe", "--event"]
+
+[[events]]
+on = "tab.focused"
+platforms = ["linux", "macos"]
 command = ["bin/council.exe", "--event"]
 
 [[events]]
 on = "tab.focused"
+platforms = ["windows"]
+command = ["bin/council-hook.exe", "--event"]
+
+[[events]]
+on = "pane.closed"
+platforms = ["linux", "macos"]
 command = ["bin/council.exe", "--event"]
 
 [[events]]
 on = "pane.closed"
-command = ["bin/council.exe", "--event"]
+platforms = ["windows"]
+command = ["bin/council-hook.exe", "--event"]

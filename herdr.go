@@ -28,6 +28,7 @@ func herdrBin() string {
 // herdr runs the herdr CLI with argv (never through a shell) and returns stdout.
 func herdr(args ...string) ([]byte, error) {
 	cmd := exec.Command(herdrBin(), args...)
+	hideWindow(cmd)
 	out, err := cmd.Output()
 	if err != nil {
 		if ee, ok := err.(*exec.ExitError); ok && len(ee.Stderr) > 0 {

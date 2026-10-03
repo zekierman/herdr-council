@@ -4,7 +4,8 @@ A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every c
 
 1. **Ask.** Write the question once.
 2. **Seats answer alone.** Each selected agent (Claude Code, Codex, Antigravity, ...) gets the question in its own pane and writes its answer to its own folder. No seat sees another's answer.
-3. **Blind verdict.** A judge agent reads the answers as A, B, C, with names hidden and order shuffled, and writes: consensus, conflicts, what was missed or risky, and a final answer. Then the names are revealed.
+3. **Peer review.** Each agent ranks the other agents' answers, anonymised as A, B, C, and never its own. The rankings are averaged. (On by default for up to six seats; it doubles the time.)
+4. **Blind verdict.** A judge agent reads the anonymised answers and the peer ranking, with names hidden and order shuffled, and writes: consensus, conflicts, what was missed or risky, and a final answer. Then the names are revealed.
 
 Different models notice different things. Where they agree you can trust the answer more; where they disagree there is usually a risk worth knowing about. Council works with whatever agents are running in the workspace, two or fifty.
 
@@ -22,7 +23,7 @@ The first time it opens, Council explains itself and asks how you want to come b
 
 - **Click:** Council keeps a tab named **Council** in each workspace. Closing it hides it until the next herdr start; turn this off in Council's settings (⚙).
 - **Shortcut:** use "Add shortcut" in the welcome screen or settings, or run `herdr plugin action invoke bind --plugin herdr-council`. It picks a key that is free in both herdr's defaults and your config (usually `prefix+a`), adds it and reloads herdr.
-- **Command line:** `herdr plugin action invoke tab --plugin herdr-council`
+- **Command line:** `herdr plugin action invoke open --plugin herdr-council` opens the popup; `... invoke tab ...` opens the Council tab.
 
 herdr doesn't let plugins add items to its right-click menu, so Council isn't there.
 
