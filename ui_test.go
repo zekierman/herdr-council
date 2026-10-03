@@ -85,15 +85,14 @@ func TestCouncilArtSymmetry(t *testing.T) {
 		t.Fatalf("art height %d", len(councilArt))
 	}
 	for y, row := range councilArt {
-		if len(row) != artWidth {
-			t.Fatalf("row %d width %d", y, len(row))
+		if n := len([]rune(row)); n != artWidth || lipgloss.Width(row) != artWidth {
+			t.Fatalf("row %d: %d runes, %d cells", y, n, lipgloss.Width(row))
 		}
-		if row != councilArt[artHeight-1-y] {
-			t.Fatalf("row %d differs from vertical mirror", y)
-		}
-		for x := 0; x < artWidth; x++ {
-			if row[x] != row[artWidth-1-x] {
-				t.Fatalf("art differs at (%d,%d) from horizontal mirror", x, y)
+	}
+	for y := range artDots {
+		for x := range artDots[y] {
+			if artDots[y][x] != artDots[y][dotsW-1-x] {
+				t.Fatalf("dot (%d,%d) differs from its mirror", x, y)
 			}
 		}
 	}

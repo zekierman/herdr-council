@@ -7,69 +7,91 @@ import (
 	"charm.land/lipgloss/v2"
 )
 
+// The emblem is a balance scale: the judge weighs the answers blind. It is drawn in braille
+// dots (2×4 per cell, so lines stay thin and dots come out square) and shows no seat count,
+// so it reads the same with two agents or ten.
 const (
-	artWidth  = 36
+	artWidth  = 36 // cells
 	artHeight = 16
+	dotsW     = artWidth * 2
+	dotsH     = artHeight * 4
 )
 
-const artRamp = " .:-=+*#%@"
+var (
+	artDots    = drawScale()
+	councilArt = toBraille(artDots)
+	artInk     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+)
 
-var councilArt = makeCouncilArt()
-
-// makeCouncilArt samples an abstract seal: two concentric dotted rings and a
-// central diamond where converging paths meet. It depicts no fixed seat count.
-// Vertical distance is doubled to compensate for terminal cell proportions;
-// absolute coordinates guarantee exact horizontal and vertical mirroring.
-func makeCouncilArt() []string {
-	rows := make([]string, artHeight)
-	for y := 0; y < artHeight; y++ {
-		var row strings.Builder
-		for x := 0; x < artWidth; x++ {
-			px := math.Abs(float64(x) - float64(artWidth-1)/2)
-			py := math.Abs(float64(y)-float64(artHeight-1)/2) * 2
-			r := math.Hypot(px, py)
-
-			luma := 0.08 * math.Exp(-math.Pow(r/11.8, 6))
-			luma += 0.54 * gaussian(r-11.5, 1.55)
-			luma += 0.29 * gaussian(r-7.65, 1.35)
-
-			// Four soft paths converge continuously into one decision point.
-			path := gaussian(py-0.67*px, 1.20) * gaussian(r-5.5, 5.4)
-			luma += 0.18 * path
-			diamond := px/4.2 + py/5.6
-			luma = math.Max(luma, 0.80*gaussian(diamond-1.0, 0.28))
-			luma = math.Max(luma, 0.89*gaussian(r, 1.75))
-			idx := int(math.Round(math.Min(1, luma) * float64(len(artRamp)-1)))
-			row.WriteByte(artRamp[idx])
+// drawScale plots every shape in terms of the distance from the centre line, so the
+// left half is an exact mirror of the right.
+func drawScale() [][]bool {
+	const (
+		cx      = float64(dotsW-1) / 2
+		armX    = 27.5 // where the chains hang from, measured from the centre
+		panY    = 34.0
+		panRx   = 7.5
+		panRy   = 4.5
+		beamTop = 11.0
+	)
+	g := make([][]bool, dotsH)
+	for y := range g {
+		g[y] = make([]bool, dotsW)
+		fy := float64(y)
+		for x := range g[y] {
+			dx := math.Abs(float64(x) - cx)
+			on := math.Hypot(dx, fy-5) <= 2.6 || // finial
+				(dx <= 0.6 && fy >= 7 && fy <= 55) || // pillar
+				(fy >= beamTop && fy <= beamTop+1 && dx <= armX) || // beam
+				math.Hypot(dx-armX, fy-beamTop-0.5) <= 1.8 || // beam ends
+				segDist(dx, fy, armX, beamTop+1, armX-panRx, panY) <= 0.55 || // chains
+				segDist(dx, fy, armX, beamTop+1, armX+panRx, panY) <= 0.55 ||
+				(fy >= panY && sq((dx-armX)/panRx)+sq((fy-panY)/panRy) <= 1) || // pans
+				(fy >= 50 && fy <= 57 && dx <= 1.5+(fy-50)*1.4) || // foot
+				(fy >= 58 && fy <= 60 && dx <= 14) // plinth
+			g[y][x] = on
 		}
-		rows[y] = row.String()
+	}
+	return g
+}
+
+func sq(v float64) float64 { return v * v }
+
+// segDist is the distance from (px, py) to the segment (ax, ay)-(bx, by).
+func segDist(px, py, ax, ay, bx, by float64) float64 {
+	vx, vy := bx-ax, by-ay
+	t := ((px-ax)*vx + (py-ay)*vy) / (vx*vx + vy*vy)
+	t = math.Max(0, math.Min(1, t))
+	return math.Hypot(px-(ax+t*vx), py-(ay+t*vy))
+}
+
+// toBraille packs each 2×4 block of dots into one braille character (U+2800 + dot bits).
+func toBraille(g [][]bool) []string {
+	bit := [4][2]rune{{0x01, 0x08}, {0x02, 0x10}, {0x04, 0x20}, {0x40, 0x80}}
+	rows := make([]string, artHeight)
+	for cy := 0; cy < artHeight; cy++ {
+		var b strings.Builder
+		for cx := 0; cx < artWidth; cx++ {
+			var r rune
+			for dy := 0; dy < 4; dy++ {
+				for dx := 0; dx < 2; dx++ {
+					if g[cy*4+dy][cx*2+dx] {
+						r |= bit[dy][dx]
+					}
+				}
+			}
+			if r == 0 {
+				b.WriteRune(' ')
+			} else {
+				b.WriteRune(0x2800 + r)
+			}
+		}
+		rows[cy] = b.String()
 	}
 	return rows
 }
 
-func gaussian(distance, sigma float64) float64 {
-	v := distance / sigma
-	return math.Exp(-0.5 * v * v)
-}
-
-// Each density step gets a quiet gray, preserving the dot pattern on black.
-var artGreys = [...]string{
-	"", "#3a3f47", "#424850", "#4a515a", "#535b65",
-	"#5e6873", "#6a7480", "#76818c", "#828c97", "#8b949e",
-}
-
-func styledArtRow(row string) string {
-	var out strings.Builder
-	for _, ch := range row {
-		if ch == ' ' {
-			out.WriteByte(' ')
-			continue
-		}
-		idx := strings.IndexRune(artRamp, ch)
-		out.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(artGreys[idx])).Render(string(ch)))
-	}
-	return out.String()
-}
+func styledArtRow(row string) string { return artInk.Render(row) }
 
 func (m model) artPosition() (int, bool) {
 	if m.phase != asking || m.w < 88 || m.h < 28 {
