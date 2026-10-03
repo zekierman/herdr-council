@@ -15,6 +15,12 @@ A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every c
 
 Different models notice different things. Where they agree you can trust the answer more; where they disagree there is usually a risk worth knowing about. Council works with whatever agents are running in the workspace, two or fifty.
 
+## See it work
+
+A real run in herdr: three agents (Antigravity, Claude Code, Codex) review a small `retry.ts`, rank each other's answers, and Claude judges blind. Recorded with the mouse; the wait for answers is sped up 16×.
+
+https://github.com/user-attachments/assets/123ce53b-2bc3-4830-9188-463ca6d69b86
+
 ## Install
 
 ```
@@ -37,7 +43,7 @@ Inside Council, `tab` moves between sections and `?` lists every key. Everything
 
 ## How answers are collected
 
-Each seat is asked to write its answer to a file and end it with a `DONE` line; Council watches the files rather than reading agent screens. If an agent stops at a permission prompt, Council shows it as waiting and "Go to agent" takes you there.
+Each seat is asked to write its answer to a file and end it with a `DONE` line; Council watches the files rather than reading agent screens. If an agent stops at a permission prompt, Council shows it as waiting and "Go to agent" takes you there. Codex in its default sandbox asks once per run before writing outside its workspace; approve it, or start Codex with a sandbox that allows Council's state folder.
 
 ## License
 
