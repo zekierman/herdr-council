@@ -1,7 +1,10 @@
 # Council
 
 <p align="center"><img src="docs/council.webp" alt="Council: one question goes to every agent, names are hidden, peers rank the answers, a blind judge weighs them, then the names are revealed" width="100%"></p>
-<p align="center"><a href="https://github.com/zekierman/herdr-council/raw/main/docs/council.mp4">▶ Watch with sound</a></p>
+
+With sound:
+
+https://github.com/user-attachments/assets/5e04b781-c49b-4102-8fe3-ec7930d38a13
 
 A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every coding agent in your workspace, let each answer on its own, then have a judge agent weigh the answers blind and write one verdict.
 
