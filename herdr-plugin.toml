@@ -31,6 +31,20 @@ title = "Council: set up a shortcut"
 contexts = ["global"]
 command = ["bin/council.exe", "--bind"]
 
-# Opens a Council tab in every workspace at start, only after `council --auto-tab on`.
+# Keep a Council tab in every workspace (on by default; `council --auto-tab off` or the ⚙ panel turns it off).
+# Each hook is idempotent: an existing Council tab is left alone, so two never stack up. A tab the
+# user closes stays closed until the next herdr start.
 [[startup]]
 command = ["bin/council.exe", "--startup"]
+
+[[events]]
+on = "workspace.created"
+command = ["bin/council.exe", "--event"]
+
+[[events]]
+on = "tab.focused"
+command = ["bin/council.exe", "--event"]
+
+[[events]]
+on = "pane.closed"
+command = ["bin/council.exe", "--event"]

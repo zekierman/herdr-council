@@ -8,11 +8,16 @@ import (
 	"regexp"
 	"runtime"
 	"strings"
+	"time"
 )
 
-// Setup commands, kept apart from the UI: `council --bind [key]` adds a conflict-free shortcut,
-// `council --ensure-tab` opens a Council tab if the workspace has none, and
-// `council --auto-tab on|off` makes herdr do that at every start.
+// Setup and lifecycle commands, kept apart from the UI:
+//
+//	council --bind [key]      add a conflict-free shortcut to the user's herdr config
+//	council --ensure-tab      open a Council tab in this workspace unless one exists
+//	council --auto-tab on|off keep (or stop keeping) a Council tab in every workspace
+//	council --startup         manifest [[startup]] hook: new session, so tabs closed last time may return
+//	council --event           manifest [[events]] hook: ensure on workspace/tab events, note closes
 //
 // ponytail: dispatched from init so main's flag set stays UI-only; move into main if it grows.
 func init() {
@@ -21,13 +26,15 @@ func init() {
 	}
 	switch os.Args[1] {
 	case "--bind":
-		os.Exit(bindKey(os.Args[2:]))
+		os.Exit(bindCLI(os.Args[2:]))
 	case "--ensure-tab":
-		os.Exit(ensureTab(os.Args[2:]))
+		os.Exit(ensureTabCLI(os.Args[2:]))
 	case "--auto-tab":
 		os.Exit(setAutoTab(os.Args[2:]))
 	case "--startup":
 		os.Exit(startup())
+	case "--event":
+		os.Exit(onEvent())
 	}
 }
 
@@ -102,51 +109,64 @@ func pickKey(want string, used map[string]bool) (string, error) {
 	return "", fmt.Errorf("all suggested keys are taken; pass one: council --bind prefix+<key>")
 }
 
-func bindKey(args []string) int {
+// currentShortcut reports the key already bound to Council, or "".
+func currentShortcut() string {
+	cur, _ := os.ReadFile(herdrConfigPath())
+	return existingBinding(string(cur))
+}
+
+// bindShortcut binds Council to want (or the first free suggested key) and reloads herdr.
+// It returns the key in use; already is true when Council was bound before. The UI calls it too.
+func bindShortcut(want string) (key string, already bool, err error) {
 	path := herdrConfigPath()
 	cur, err := os.ReadFile(path)
 	if err != nil && !os.IsNotExist(err) {
-		fmt.Fprintln(os.Stderr, "council:", err)
-		return 1
+		return "", false, err
 	}
 	if k := existingBinding(string(cur)); k != "" {
-		fmt.Printf("Council is already on %s (%s)\n", k, path)
-		return 0
+		return k, true, nil
 	}
 	defaults, err := herdr("--default-config")
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "council: could not read herdr's default keys:", err)
-		return 1
+		return "", false, fmt.Errorf("could not read herdr's default keys: %w", err)
 	}
 	used := boundKeys(string(defaults), true)
 	for k := range boundKeys(string(cur), false) {
 		used[k] = true
 	}
+	if key, err = pickKey(want, used); err != nil {
+		return "", false, err
+	}
+	block := fmt.Sprintf("\n# herdr-council\n[[keys.command]]\nkey = %q\ntype = \"plugin_action\"\ncommand = \"herdr-council.open\"\ndescription = \"ask the council\"\n", key)
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return "", false, err
+	}
+	if err := os.WriteFile(path, append(cur, []byte(block)...), 0o644); err != nil {
+		return "", false, err
+	}
+	if _, err := herdr("config", "check"); err != nil { // never leave the user with a broken config
+		os.WriteFile(path, cur, 0o644)
+		return "", false, fmt.Errorf("herdr rejected the new binding, config restored: %w", err)
+	}
+	herdr("server", "reload-config")
+	return key, false, nil
+}
+
+func bindCLI(args []string) int {
 	want := ""
 	if len(args) > 0 {
 		want = args[0]
 	}
-	key, err := pickKey(want, used)
-	if err != nil {
+	key, already, err := bindShortcut(want)
+	switch {
+	case err != nil:
 		fmt.Fprintln(os.Stderr, "council:", err)
 		return 1
+	case already:
+		fmt.Printf("Council is already on %s (%s)\n", key, herdrConfigPath())
+	default:
+		fmt.Printf("Council is on %s now (%s)\n", key, herdrConfigPath())
 	}
-	block := fmt.Sprintf("\n# herdr-council\n[[keys.command]]\nkey = %q\ntype = \"plugin_action\"\ncommand = \"herdr-council.open\"\ndescription = \"ask the council\"\n", key)
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		fmt.Fprintln(os.Stderr, "council:", err)
-		return 1
-	}
-	if err := os.WriteFile(path, append(cur, []byte(block)...), 0o644); err != nil {
-		fmt.Fprintln(os.Stderr, "council:", err)
-		return 1
-	}
-	if _, err := herdr("config", "check"); err != nil { // never leave the user with a broken config
-		os.WriteFile(path, cur, 0o644)
-		fmt.Fprintln(os.Stderr, "council: herdr rejected the new binding, config restored:", err)
-		return 1
-	}
-	herdr("server", "reload-config")
-	fmt.Printf("Council is on %s now (%s)\n", key, path)
 	return 0
 }
 
@@ -178,69 +198,136 @@ func councilPane(workspace string) (*pane, error) {
 	return nil, nil
 }
 
-// ensureTab opens the Council in its own tab, named "Council", unless the workspace already has one.
-func ensureTab(args []string) int {
+func focusedTab(workspace string) string {
+	out, err := herdr("tab", "list")
+	if err != nil {
+		return ""
+	}
+	var resp struct {
+		Result struct {
+			Tabs []struct {
+				ID        string `json:"tab_id"`
+				Workspace string `json:"workspace_id"`
+				Focused   bool   `json:"focused"`
+			} `json:"tabs"`
+		} `json:"result"`
+	}
+	json.Unmarshal(out, &resp)
+	for _, t := range resp.Result.Tabs {
+		if t.Workspace == workspace && t.Focused {
+			return t.ID
+		}
+	}
+	return ""
+}
+
+// Per-workspace markers in the state dir: "known" means a Council tab was there,
+// "hidden" means the user closed it this session (cleared by the next startup).
+func markerPath(kind, ws string) string {
+	return filepath.Join(stateDir(), kind, strings.NewReplacer(":", "_", "/", "_", `\`, "_").Replace(ws))
+}
+func hasMarker(kind, ws string) bool { _, err := os.Stat(markerPath(kind, ws)); return err == nil }
+func setMarker(kind, ws string) {
+	os.MkdirAll(filepath.Dir(markerPath(kind, ws)), 0o755)
+	os.WriteFile(markerPath(kind, ws), nil, 0o644)
+}
+func clearMarker(kind, ws string) { os.Remove(markerPath(kind, ws)) }
+
+// withLock serialises ensures: herdr sends focus events in bursts, and two concurrent
+// ensures would each open a tab. A lock older than 30s is from a crashed run.
+func withLock(fn func()) {
+	dir := filepath.Join(stateDir(), "ensure.lock")
+	os.MkdirAll(stateDir(), 0o755)
+	for i := 0; i < 20; i++ {
+		if os.Mkdir(dir, 0o755) == nil {
+			defer os.Remove(dir)
+			fn()
+			return
+		}
+		if fi, err := os.Stat(dir); err == nil && time.Since(fi.ModTime()) > 30*time.Second {
+			os.Remove(dir)
+			continue
+		}
+		time.Sleep(250 * time.Millisecond)
+	}
+}
+
+// ensureTab opens a Council tab named "Council" in ws unless one exists. With keepFocus the
+// user's current tab stays in front, so a background ensure never steals focus.
+func ensureTab(ws string, keepFocus bool) error {
+	var err error
+	withLock(func() {
+		var p *pane
+		if p, err = councilPane(ws); err != nil {
+			return
+		}
+		if p != nil {
+			setMarker("known", ws)
+			herdr("tab", "rename", p.Tab, "Council")
+			return
+		}
+		back := ""
+		if keepFocus {
+			back = focusedTab(ws)
+		}
+		open := []string{"plugin", "pane", "open", "--plugin", "herdr-council", "--entrypoint", "council", "--placement", "tab"}
+		if ws != "" {
+			open = append(open, "--workspace", ws)
+		}
+		if _, err = herdr(open...); err != nil {
+			return
+		}
+		if p, _ = councilPane(ws); p != nil {
+			herdr("tab", "rename", p.Tab, "Council")
+			setMarker("known", ws)
+		}
+		if back != "" {
+			herdr("tab", "focus", back)
+		}
+	})
+	return err
+}
+
+func ensureTabCLI(args []string) int {
 	ws := currentWorkspace()
 	if len(args) > 0 {
 		ws = args[0]
 	}
-	if p, err := councilPane(ws); err != nil {
+	clearMarker("hidden", ws) // an explicit request brings it back even after a close
+	if err := ensureTab(ws, false); err != nil {
 		fmt.Fprintln(os.Stderr, "council:", err)
 		return 1
-	} else if p != nil {
-		herdr("tab", "rename", p.Tab, "Council")
-		return 0
-	}
-	open := []string{"plugin", "pane", "open", "--plugin", "herdr-council", "--entrypoint", "council", "--placement", "tab"}
-	if ws != "" {
-		open = append(open, "--workspace", ws)
-	}
-	if _, err := herdr(open...); err != nil {
-		fmt.Fprintln(os.Stderr, "council:", err)
-		return 1
-	}
-	if p, err := councilPane(ws); err == nil && p != nil {
-		herdr("tab", "rename", p.Tab, "Council")
 	}
 	return 0
 }
 
-func autoTabFile() string {
-	dir := os.Getenv("HERDR_PLUGIN_CONFIG_DIR")
-	if dir == "" {
-		dir = filepath.Join(stateDir(), "config")
-	}
-	return filepath.Join(dir, "auto-tab")
-}
-
 func setAutoTab(args []string) int {
-	f := autoTabFile()
+	s := loadSettings()
 	switch {
 	case len(args) > 0 && args[0] == "on":
-		os.MkdirAll(filepath.Dir(f), 0o755)
-		if err := os.WriteFile(f, []byte("on\n"), 0o644); err != nil {
-			fmt.Fprintln(os.Stderr, "council:", err)
-			return 1
-		}
-		fmt.Println("Council will open its own tab in every workspace when herdr starts.")
+		s.AutoTab = true
 	case len(args) > 0 && args[0] == "off":
-		os.Remove(f)
-		fmt.Println("Council will no longer open a tab at start.")
+		s.AutoTab = false
 	default:
 		fmt.Fprintln(os.Stderr, "usage: council --auto-tab on|off")
 		return 2
 	}
+	if err := saveSettings(s); err != nil {
+		fmt.Fprintln(os.Stderr, "council:", err)
+		return 1
+	}
+	if s.AutoTab {
+		fmt.Println("Council keeps a tab in every workspace.")
+	} else {
+		fmt.Println("Council no longer opens tabs on its own.")
+	}
 	return 0
 }
 
-// startup runs from the manifest's [[startup]] hook: it does nothing unless auto-tab is on.
-func startup() int {
-	if _, err := os.Stat(autoTabFile()); err != nil {
-		return 0
-	}
+func workspaces() []string {
 	out, err := herdr("workspace", "list")
 	if err != nil {
-		return 0
+		return nil
 	}
 	var resp struct {
 		Result struct {
@@ -249,11 +336,55 @@ func startup() int {
 			} `json:"workspaces"`
 		} `json:"result"`
 	}
-	if json.Unmarshal(out, &resp) != nil {
+	json.Unmarshal(out, &resp)
+	var ids []string
+	for _, w := range resp.Result.Workspaces {
+		ids = append(ids, w.ID)
+	}
+	return ids
+}
+
+// startup: a new herdr session, so tabs the user closed last session may come back.
+func startup() int {
+	os.RemoveAll(filepath.Join(stateDir(), "hidden"))
+	if !loadSettings().AutoTab {
 		return 0
 	}
-	for _, w := range resp.Result.Workspaces {
-		ensureTab([]string{w.ID})
+	for _, ws := range workspaces() {
+		ensureTab(ws, true)
 	}
+	return 0
+}
+
+// eventWorkspace finds the workspace an event is about: event JSON first, then the context.
+func eventWorkspace() string {
+	for _, env := range []string{"HERDR_PLUGIN_EVENT_JSON", "HERDR_PLUGIN_CONTEXT_JSON"} {
+		if m := regexp.MustCompile(`"workspace_id"\s*:\s*"([^"]+)"`).FindStringSubmatch(os.Getenv(env)); m != nil {
+			return m[1]
+		}
+	}
+	return os.Getenv("HERDR_WORKSPACE_ID")
+}
+
+// onEvent: pane.closed notes a closed Council tab (hidden until the next session); every other
+// event makes sure the workspace has its Council tab, unless the user turned that off or closed it.
+func onEvent() int {
+	ws := eventWorkspace()
+	if ws == "" {
+		return 0
+	}
+	if os.Getenv("HERDR_PLUGIN_EVENT") == "pane.closed" {
+		if hasMarker("known", ws) {
+			if p, err := councilPane(ws); err == nil && p == nil {
+				setMarker("hidden", ws)
+				clearMarker("known", ws)
+			}
+		}
+		return 0
+	}
+	if !loadSettings().AutoTab || hasMarker("hidden", ws) {
+		return 0
+	}
+	ensureTab(ws, true)
 	return 0
 }
