@@ -30,8 +30,8 @@ func (m model) seatHint() string {
 }
 
 func (m model) seatListHeight() int {
-	// The rest of Ask uses at most 19 rows at narrow sizes; keep a viewport in the middle.
-	return max(1, min(12, m.h-21))
+	// Leave room for the peer-review choice and its explanation.
+	return max(1, min(12, m.h-23))
 }
 
 func (m *model) keepSeatVisible() {

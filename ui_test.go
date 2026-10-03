@@ -109,7 +109,7 @@ func pressKey(m model, code rune, mod tea.KeyMod) (model, tea.Cmd) {
 func TestAskFocusAndKeys(t *testing.T) {
 	fakeAgents(t)
 	m := askingModel(100, 32)
-	for _, want := range []askFocus{focusSeats, focusJudge, focusAsk, focusClose, focusQuestion} {
+	for _, want := range []askFocus{focusSeats, focusJudge, focusPeer, focusAsk, focusClose, focusQuestion} {
 		m, _ = pressKey(m, tea.KeyTab, 0)
 		if m.focus != want {
 			t.Fatalf("tab focus = %d, want %d", m.focus, want)
@@ -156,6 +156,7 @@ func TestAskFocusAndKeys(t *testing.T) {
 	if m.judge != 1 {
 		t.Fatalf("Left did not cycle judge back: %d", m.judge)
 	}
+	m, _ = pressKey(m, tea.KeyTab, 0) // Peer review
 	m, _ = pressKey(m, tea.KeyTab, 0) // Ask button
 	m, _ = pressKey(m, tea.KeyEnter, 0)
 	if m.phase != watching || m.run == nil {
@@ -655,6 +656,155 @@ func TestManySnapshots(t *testing.T) {
 		m    model
 	}{{"ask-12", ask}, {"confirm-12", confirm}, {"watch-50", watch}} {
 		assertScreen(t, tc.m)
+		t.Logf("%s screen:\n%s", tc.name, styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), ""))
+	}
+}
+
+func peerWatchModel(w, h int) model {
+	m := manyWatchModel(3, w, h)
+	m.run.PeerReview = true
+	m.run.Order = []int{0, 1, 2}
+	m.run.Letters = []string{"A", "B", "C"}
+	m.run.Reviews = make([]*Seat, 3)
+	for i := range m.run.Seats {
+		m.run.Seats[i].State = Done
+		m.run.Reviews[i] = &Seat{Agent: m.run.Seats[i].Agent, State: Working, Sent: time.Now().Add(-12 * time.Second)}
+	}
+	m.run.Reviews[0].State = Done
+	m.run.Reviews[0].Answer = "Answer B is clearer.\nFINAL RANKING:\n1. Answer B\n2. Answer C"
+	m.run.Ranking = []RankRow{{Letter: "B", Seat: 1, Avg: 1.0, Votes: 2}, {Letter: "A", Seat: 0, Avg: 2.0, Votes: 2}}
+	m.seat = 0
+	m.refreshAnswer()
+	return m
+}
+
+func TestPeerDefaultsAndAsk(t *testing.T) {
+	fakeAgents(t)
+	for _, n := range []int{3, 6, 7, 50} {
+		m := manyAskModel(n, 100, 32)
+		if m.peerReview != (m.selectedCount() <= 6) {
+			t.Fatalf("%d seats: peer default %v", n, m.peerReview)
+		}
+		m = clickAction(t, m, "seat-all")
+		if m.peerReview != (n <= 6) {
+			t.Fatalf("all %d: peer default %v", n, m.peerReview)
+		}
+		m = clickAction(t, m, "peer-toggle")
+		chosen := m.peerReview
+		m = clickAction(t, m, "seat-none")
+		if !m.peerChosen || m.peerReview != chosen {
+			t.Fatal("explicit peer choice changed with seats")
+		}
+		next, _ := m.do("new")
+		m = next.(model)
+		if !m.peerChosen || m.peerReview != chosen {
+			t.Fatal("explicit peer choice lost on new question")
+		}
+	}
+	m := askingModel(100, 32)
+	m = clickAction(t, m, "peer-toggle")
+	if m.peerReview {
+		t.Fatal("mouse did not turn peer review off")
+	}
+	m = clickAction(t, m, "peer-toggle")
+	m, _ = pressKey(m, tea.KeySpace, 0)
+	if m.peerReview {
+		t.Fatal("space did not toggle peer review")
+	}
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if !m.peerReview {
+		t.Fatal("enter did not toggle peer review")
+	}
+	m = clickAction(t, m, "ask")
+	if m.run == nil || !m.run.PeerReview {
+		t.Fatal("ask did not pass peer review to run")
+	}
+}
+
+func TestPeerStageAndRanking(t *testing.T) {
+	m := peerWatchModel(100, 32)
+	if line := m.stageLine(); !strings.Contains(line, "2 Peer review 1/3") || !strings.Contains(line, "3 Verdict") {
+		t.Fatalf("review stage: %q", line)
+	}
+	m.run.PeerReview = false
+	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "2 Verdict") {
+		t.Fatalf("no-review stage: %q", line)
+	}
+	m.run.PeerReview = true
+	m.run.Reviews = nil
+	m.run.Seats[2].State = Working
+	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "2 Verdict") {
+		t.Fatalf("fewer than three answers: %q", line)
+	}
+	m.run.Seats[2].State = Done
+	m.run.Reviews = make([]*Seat, 3)
+	m.run.Judge.State = Working
+	m.seat = len(m.run.Seats)
+	m.refreshAnswer()
+	plain := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
+	if !strings.Contains(plain, "PEER RANKING") || strings.Contains(m.currentText(), "(agent") || !strings.Contains(m.currentText(), "Answer B") {
+		t.Fatalf("pending ranking leaked names or missing: %q", m.currentText())
+	}
+	m.run.Judge.State = Done
+	m.run.Judge.Answer = "Use the strongest answer."
+	m.refreshAnswer()
+	if !strings.Contains(m.currentText(), "(agent") || !strings.Contains(m.currentText(), "Use the strongest answer") {
+		t.Fatalf("revealed copy missing ranking/verdict: %q", m.currentText())
+	}
+}
+
+func TestPeerReviewSwitchAndLayouts(t *testing.T) {
+	for _, size := range [][2]int{{60, 24}, {100, 32}} {
+		for _, n := range []int{3, 50} {
+			ask := manyAskModel(n, size[0], size[1])
+			assertScreen(t, ask)
+			ask = clickAction(t, ask, "peer-toggle")
+			assertScreen(t, ask)
+			watch := manyWatchModel(n, size[0], size[1])
+			watch.run.PeerReview = true
+			watch.run.Reviews = make([]*Seat, n)
+			watch.run.Reviews[0] = &Seat{Agent: watch.run.Seats[0].Agent, State: Done, Answer: "A review"}
+			watch.seat = 0
+			watch.refreshAnswer()
+			assertScreen(t, watch)
+			watch = clickAction(t, watch, "review")
+			if !watch.showReview || watch.currentText() != "A review" {
+				t.Fatal("review click did not show review")
+			}
+			watch = clickAction(t, watch, "answer")
+			if watch.showReview {
+				t.Fatal("answer click did not restore answer")
+			}
+			watch, _ = pressKey(watch, 'r', 0)
+			if !watch.showReview {
+				t.Fatal("r did not switch to review")
+			}
+			watch.seat = n
+			watch.run.Judge.State = Done
+			watch.run.Judge.Answer = "Verdict"
+			watch.run.Ranking = []RankRow{{Letter: "A", Seat: 0, Avg: 1, Votes: 1}}
+			watch.refreshAnswer()
+			assertScreen(t, watch)
+		}
+	}
+}
+
+func TestPeerSnapshots(t *testing.T) {
+	ask := manyAskModel(3, 100, 32)
+	watch := peerWatchModel(100, 32)
+	verdict := peerWatchModel(100, 32)
+	verdict.seat = len(verdict.run.Seats)
+	verdict.run.Judge.State = Done
+	verdict.run.Judge.Sent = time.Now().Add(-10 * time.Second)
+	verdict.run.Judge.Answer = "Use the modular approach."
+	for _, rv := range verdict.run.Reviews {
+		rv.State = Done
+	}
+	verdict.refreshAnswer()
+	for _, tc := range []struct {
+		name string
+		m    model
+	}{{"peer-ask", ask}, {"peer-watch", watch}, {"peer-verdict", verdict}} {
 		t.Logf("%s screen:\n%s", tc.name, styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), ""))
 	}
 }

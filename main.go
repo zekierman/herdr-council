@@ -43,6 +43,7 @@ const (
 	focusQuestion askFocus = iota
 	focusSeats
 	focusJudge
+	focusPeer
 	focusAsk
 	focusClose
 	focusCount
@@ -74,6 +75,8 @@ type model struct {
 	cursor      int
 	seatTop     int
 	confirmAsk  bool
+	peerReview  bool
+	peerChosen  bool
 	judgeOpen   bool
 	judgeCursor int
 	judgeTop    int
@@ -83,6 +86,7 @@ type model struct {
 	seat           int // len(run.Seats) selects the verdict
 	tabStart       int
 	sawVerdict     bool
+	showReview     bool
 	answer         viewport.Model
 	flash          string
 	help           bool
@@ -101,7 +105,7 @@ func newModel(workspace string) model {
 	ta.ShowLineNumbers = false
 	ta.SetHeight(3)
 	ta.Focus()
-	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, focus: focusQuestion, answer: viewport.New()}
+	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, focus: focusQuestion, peerReview: true, answer: viewport.New()}
 }
 
 func fetchAgents(ws string) tea.Cmd {
@@ -219,6 +223,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					m.judge = i
 				}
 			}
+			m.syncPeerDefault()
 		}
 		if m.judge < 0 || m.judge >= len(m.agents) {
 			m.judge = 0
@@ -350,6 +355,14 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 		for _, a := range m.agents {
 			m.picked[a.Pane] = act == "seat-all" && (a.Status == "idle" || a.Status == "done")
 		}
+		m.syncPeerDefault()
+		return m, nil
+	case act == "peer-toggle":
+		m.focus = focusPeer
+		m.input.Blur()
+		m.peerReview = !m.peerReview
+		m.peerChosen = true
+		m.confirmAsk = false
 		return m, nil
 	case act == "input":
 		m.focus = focusQuestion
@@ -362,6 +375,7 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 			m.input.Blur()
 			p := m.agents[i].Pane
 			m.picked[p] = !m.picked[p]
+			m.syncPeerDefault()
 			m.cursor = i
 			m.confirmAsk = false
 			m.keepSeatVisible()
@@ -391,13 +405,18 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 		return m, nil
 	case strings.HasPrefix(act, "seat:"):
 		fmt.Sscanf(act, "seat:%d", &m.seat)
+		m.showReview = false
 		m.keepTabVisible()
+	case act == "review", act == "answer":
+		m.showReview = act == "review"
+		m.answer.GotoTop()
 	case act == "tab-prev", act == "tab-next":
 		step := m.tabPageSize()
 		if act == "tab-prev" {
 			step = -step
 		}
 		m.seat = min(len(m.run.Seats)-1, max(0, m.seat+step))
+		m.showReview = false
 		m.keepTabVisible()
 	case act == "copy":
 		if body := m.currentText(); body != "" && clipboard.WriteAll(body) == nil {
@@ -430,6 +449,8 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 			nm.picked[a.Pane] = idle <= 6 && (a.Status == "idle" || a.Status == "done")
 		}
 		nm.settings, nm.shortcut = m.settings, m.shortcut
+		nm.peerReview, nm.peerChosen = m.peerReview, m.peerChosen
+		nm.syncPeerDefault()
 		nm.resize()
 		return nm, nm.input.Focus()
 	}
@@ -489,6 +510,8 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 		case focusJudge:
 			return m.do("judge")
+		case focusPeer:
+			return m.do("peer-toggle")
 		case focusClose:
 			return m.do("close")
 		}
@@ -496,6 +519,9 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "space", "x":
 		if m.focus == focusSeats && len(m.agents) > 0 {
 			return m.do(fmt.Sprintf("toggle:%d", m.cursor))
+		}
+		if m.focus == focusPeer {
+			return m.do("peer-toggle")
 		}
 	case "left", "right":
 		if m.focus == focusJudge {
@@ -556,6 +582,7 @@ func (m model) ask() (tea.Model, tea.Cmd) {
 		return m, nil
 	}
 	r.Workspace = m.workspace
+	r.PeerReview = m.peerReview
 	send := r.dispatch()
 	m.run, m.seat, m.phase, m.flash, m.sawVerdict = r, 0, watching, "", false
 	m.refreshAnswer()
@@ -577,6 +604,13 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.seat = min(n-1, m.seat+m.tabPageSize())
 	case "v":
 		m.seat = len(m.run.Seats)
+	case "r":
+		if m.reviewAvailable() {
+			m.showReview = !m.showReview
+			m.answer.GotoTop()
+			m.refreshAnswer()
+		}
+		return m, nil
 	case "c":
 		return m.do("copy")
 	case "f":
@@ -595,6 +629,7 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.flash = ""
+	m.showReview = false
 	m.keepTabVisible()
 	m.refreshAnswer()
 	return m, nil
@@ -621,11 +656,21 @@ func (m model) currentAgent() *Agent {
 
 func (m model) currentText() string {
 	s := m.currentSeat()
+	if m.onVerdict() {
+		var parts []string
+		if ranking := m.run.RankingText(s != nil && s.State == Done); ranking != "" {
+			parts = append(parts, "PEER RANKING\n"+ranking)
+		}
+		if s != nil && s.State == Done {
+			parts = append(parts, s.Answer, "Revealed: "+strings.Join(m.run.Reveal(), ", "))
+		}
+		return strings.Join(parts, "\n\n")
+	}
+	if m.showReview && m.reviewAvailable() {
+		s = m.run.Reviews[m.seat]
+	}
 	if s == nil || s.State != Done {
 		return ""
-	}
-	if m.onVerdict() {
-		return s.Answer + "\n\n" + strings.Join(m.run.Reveal(), ", ")
 	}
 	return s.Answer
 }
@@ -640,6 +685,9 @@ func (m *model) refreshAnswer() {
 		return
 	}
 	s := m.run.Seats[m.seat]
+	if m.showReview && m.reviewAvailable() {
+		s = m.run.Reviews[m.seat]
+	}
 	var body string
 	switch s.State {
 	case Done:
@@ -658,7 +706,7 @@ func (m *model) refreshAnswer() {
 	m.answer.SetContent(body)
 }
 
-func (m model) verdictBody(wrap lipgloss.Style) string {
+func (m model) verdictStatus(wrap lipgloss.Style) string {
 	r, j := m.run, m.run.Judge
 	switch {
 	case j.State == Done:
@@ -819,6 +867,16 @@ func (m model) layout() screen {
 			judgeStyle = primary
 		}
 		sc.add(seg("     "), act(judgeStyle.Render("‹ "+judge+" ›  Pick judge"), "judge"))
+		peerBox := "[ ]"
+		if m.peerReview {
+			peerBox = "[x]"
+		}
+		peerStyle := text
+		if m.focus == focusPeer {
+			peerStyle = accent
+		}
+		sc.add(act(askFocusMark(m.focus == focusPeer)+peerStyle.Render(peerBox+" Peer review"), "peer-toggle"))
+		sc.add(seg("     " + dim.Render(shorten("Ranks others, never itself; slower, sharper verdict.", formWidth-5))))
 		pause()
 		askStyle, closeStyle := button, button
 		if m.focus == focusAsk {
@@ -858,6 +916,7 @@ func (m model) layout() screen {
 	q := oneLine(r.Question)
 	sc.add(seg(dim.Render(" Q  ")), seg(text.Render(shorten(q, width-5))))
 	sc.add(seg(dim.Render(shorten(" Seats answer independently. The judge sees anonymous letters.", width))))
+	sc.add(seg(" " + dim.Render(shorten(m.stageLine(), width-2))))
 	for _, row := range m.tabRows(now, width) {
 		sc.add(row...)
 	}
@@ -869,7 +928,20 @@ func (m model) layout() screen {
 			sc.add(seg(" " + good.Render("REVEALED") + "  " + text.Render(shorten(strings.Join(r.Reveal(), "  ·  "), width-12))))
 		}
 	} else {
-		sc.add(seg(" "+bold.Render("ANSWER")), seg(dim.Render("  /  "+r.Seats[m.seat].Agent.Name)))
+		label := "  /  " + r.Seats[m.seat].Agent.Name
+		if m.reviewAvailable() {
+			label += "  ·  " + m.reviewStatus(now)
+		}
+		sc.add(seg(" "+bold.Render("ANSWER")), seg(dim.Render(shorten(label, width-10))))
+		if m.reviewAvailable() {
+			answerStyle, reviewStyle := dim, dim
+			if m.showReview {
+				reviewStyle = accent
+			} else {
+				answerStyle = accent
+			}
+			sc.add(seg(" "), act(answerStyle.Render("Answer"), "answer"), seg(dim.Render("  |  ")), act(reviewStyle.Render("Review"), "review"), seg(dim.Render("  ·  r switch")))
+		}
 	}
 	// Reserve the footer first, so wrapped tabs and the reveal never push buttons off-screen.
 	legend := watchLegend(width)

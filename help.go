@@ -64,6 +64,8 @@ func askLegend(focus askFocus, width int) [][][2]string {
 		items = append(items, legendItem{"↑↓", "row", ""}, legendItem{"space/enter", "select", ""})
 	case focusJudge:
 		items = append(items, legendItem{"S-tab", "back", ""}, legendItem{"←→/enter", "cycle/pick", ""})
+	case focusPeer:
+		items = append(items, legendItem{"space/enter", "peer review", ""})
 	case focusAsk:
 		items = append(items, legendItem{"S-tab", "back", ""}, legendItem{"enter", "send", ""})
 	case focusClose:
@@ -77,6 +79,7 @@ func watchLegend(width int) [][][2]string {
 		{"←→/tab", "switch", ""}, {"1-9", "seat", ""}, {"v", "verdict", ""},
 		{"[/]", "page", ""},
 		{"↑↓/wheel", "scroll", ""}, {"c", "copy", ""}, {"f", "agent", ""},
+		{"r", "answer/review", ""},
 		{"j", "judge", ""}, {"n", "new", ""}, {"q", "close", ""}, {"?", "help", "help"},
 	}, width)
 }
@@ -92,6 +95,7 @@ var askHelp = []helpEntry{
 	{"a/n", "all idle / none"},
 	{"←→", "cycle judge"},
 	{"enter", "open judge picker"},
+	{"space", "peer toggle"},
 	{"s", "settings (off input)"},
 	{"?", "toggle help"},
 	{"esc", "close"},
@@ -105,6 +109,7 @@ var watchHelp = []helpEntry{
 	{"1-9", "seat"},
 	{"[/]", "tab page"},
 	{"v", "verdict"},
+	{"r", "answer / review"},
 	{"↑↓/wheel", "scroll"},
 	{"c", "copy"},
 	{"f", "agent pane"},
