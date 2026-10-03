@@ -911,7 +911,7 @@ func (m model) View() tea.View {
 }
 
 // headless asks without the UI: send, poll until the seats and the judge settle, print everything.
-func headless(question, seatList, judgeName, ws string) int {
+func headless(question, seatList, judgeName, ws, peer string) int {
 	if ws == "" {
 		ws = currentWorkspace()
 	}
@@ -949,6 +949,7 @@ func headless(question, seatList, judgeName, ws string) int {
 		return 1
 	}
 	r.Workspace = ws
+	r.PeerReview = peer == "on" || (peer == "auto" && len(picked) <= 6)
 	r.send()
 	for !r.finished() {
 		time.Sleep(time.Second)
@@ -978,9 +979,10 @@ func main() {
 	ask := flag.String("ask", "", "ask without the UI and print the answers and the verdict (for scripts and testing)")
 	seats := flag.String("seats", "", "comma-separated agent names to ask with --ask (default: all idle)")
 	judge := flag.String("judge", "claude", "agent name that judges with --ask (default: claude, else the first seat)")
+	peer := flag.String("peer-review", "auto", "with --ask: on, off, or auto (on for up to 6 seats)")
 	flag.Parse()
 	if *ask != "" {
-		os.Exit(headless(*ask, *seats, *judge, *ws))
+		os.Exit(headless(*ask, *seats, *judge, *ws, *peer))
 	}
 	if *open {
 		args := []string{"plugin", "pane", "open", "--plugin", "herdr-council", "--entrypoint", "council"}
