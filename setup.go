@@ -41,6 +41,9 @@ func init() {
 var preferredKeys = []string{"prefix+a", "prefix+shift+a", "prefix+y", "prefix+shift+y", "prefix+comma"}
 
 func herdrConfigPath() string {
+	if p := os.Getenv("HERDR_CONFIG_PATH"); p != "" { // herdr's own override wins
+		return p
+	}
 	if runtime.GOOS == "windows" {
 		return filepath.Join(os.Getenv("APPDATA"), "herdr", "config.toml")
 	}
@@ -141,11 +144,20 @@ func bindShortcut(want string) (key string, already bool, err error) {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return "", false, err
 	}
-	if err := os.WriteFile(path, append(cur, []byte(block)...), 0o644); err != nil {
+	if len(cur) > 0 { // one-time copy of the user's config before Council ever touches it
+		if _, err := os.Stat(path + ".council-backup"); os.IsNotExist(err) {
+			os.WriteFile(path+".council-backup", cur, 0o644)
+		}
+	}
+	next := append([]byte{}, cur...)
+	if len(next) > 0 && next[len(next)-1] != '\n' {
+		next = append(next, '\n')
+	}
+	if err := writeAtomic(path, append(next, []byte(block)...)); err != nil {
 		return "", false, err
 	}
 	if _, err := herdr("config", "check"); err != nil { // never leave the user with a broken config
-		os.WriteFile(path, cur, 0o644)
+		writeAtomic(path, cur)
 		return "", false, fmt.Errorf("herdr rejected the new binding, config restored: %w", err)
 	}
 	herdr("server", "reload-config")
@@ -176,6 +188,23 @@ type pane struct {
 	Workspace string `json:"workspace_id"`
 	Label     string `json:"label"`
 	Agent     string `json:"agent"`
+	Cwd       string `json:"cwd"`
+}
+
+// isCouncil: herdr's pane list carries no plugin owner, so a Council pane is one labelled
+// "Council" whose working directory is this plugin's root (herdr starts plugin panes there).
+func (p pane) isCouncil() bool {
+	if p.Label != "Council" {
+		return false
+	}
+	root := os.Getenv("HERDR_PLUGIN_ROOT")
+	if root == "" {
+		return true
+	}
+	norm := func(s string) string {
+		return strings.ToLower(strings.TrimRight(filepath.Clean(strings.TrimPrefix(s, `\\?\`)), `\/`))
+	}
+	return norm(p.Cwd) == norm(root)
 }
 
 func listPanes() ([]pane, error) {
@@ -200,7 +229,7 @@ func councilPane(workspace string) (*pane, error) {
 		return nil, err
 	}
 	for _, p := range ps {
-		if p.Label == "Council" && (workspace == "" || p.Workspace == workspace) {
+		if p.isCouncil() && (workspace == "" || p.Workspace == workspace) {
 			return &p, nil
 		}
 	}
@@ -246,7 +275,7 @@ func tidyCouncilTabs(ws string) {
 		}
 		onlyChrome := true
 		for _, p := range ps {
-			if p.Tab == t.ID && (p.Label == "Council" || p.Label == "" || p.Agent != "") {
+			if p.Tab == t.ID && (p.isCouncil() || p.Label == "" || p.Agent != "") {
 				onlyChrome = false
 			}
 		}
@@ -406,13 +435,32 @@ func workspaces() []string {
 // startup: a new herdr session, so tabs the user closed last session may come back.
 func startup() int {
 	os.RemoveAll(filepath.Join(stateDir(), "hidden"))
+	pruneRuns(keepRuns)
 	if !loadSettings().AutoTab {
 		return 0
 	}
 	for _, ws := range workspaces() {
-		ensureTab(ws, true)
+		if hasAgents(ws) {
+			ensureTab(ws, true)
+		}
 	}
 	return 0
+}
+
+// hasAgents: automatic tabs only go where there is someone to ask.
+func hasAgents(ws string) bool {
+	a, err := listAgents(ws)
+	return err == nil && len(a) > 0
+}
+
+// writeAtomic replaces a file through a temp file and rename, so a crash mid-write can't
+// leave it half written.
+func writeAtomic(path string, data []byte) error {
+	tmp := path + ".council-tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
 }
 
 // eventWorkspace finds the workspace an event is about: event JSON first, then the context.
@@ -442,7 +490,7 @@ func onEvent() int {
 		}
 		return 0
 	}
-	if !loadSettings().AutoTab || hasMarker("hidden", ws) {
+	if !loadSettings().AutoTab || hasMarker("hidden", ws) || !hasAgents(ws) {
 		return 0
 	}
 	ensureTab(ws, true)

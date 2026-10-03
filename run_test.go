@@ -89,7 +89,7 @@ func TestCouncilFlow(t *testing.T) {
 			t.Fatalf("judge input names an author: %s", blind)
 		}
 	}
-	if !strings.Contains(string(blind), "## Answer A") || !strings.Contains(string(blind), "## Answer B") || strings.Contains(string(blind), "## Answer C") {
+	if !strings.Contains(string(blind), "BEGIN ANSWER A") || !strings.Contains(string(blind), "BEGIN ANSWER B") || strings.Contains(string(blind), "BEGIN ANSWER C") {
 		t.Fatalf("judge input letters: %s", blind)
 	}
 	if got := (*sent)[len(*sent)-1]; !strings.HasPrefix(got, "p1: ") || !strings.Contains(got, "judge") {
@@ -130,7 +130,7 @@ func TestLatestRunResumes(t *testing.T) {
 	r, _ := newRun("q?", agents, agents[1])
 	r.send()
 	answer(r.Seats[1], "later answer")
-	got := latestRun(time.Hour)
+	got := latestRun(time.Hour, "")
 	if got == nil || got.Question != "q?" || len(got.Seats) != 2 || got.Judge.Agent.Name != "codex" {
 		t.Fatalf("resume: %+v", got)
 	}
@@ -140,7 +140,7 @@ func TestLatestRunResumes(t *testing.T) {
 	if got.Judge.State != Sending || len(got.Order) != 2 {
 		t.Fatalf("judge %v order %v", got.Judge.State, got.Order)
 	}
-	if latestRun(-time.Second) != nil {
+	if latestRun(-time.Second, "") != nil {
 		t.Fatal("an old run should not resume")
 	}
 }

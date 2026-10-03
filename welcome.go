@@ -23,7 +23,7 @@ func launchModel(workspace string) model {
 		m.input.Blur()
 		return m
 	}
-	if r := latestRun(30 * time.Minute); r != nil {
+	if r := latestRun(30*time.Minute, m.workspace); r != nil {
 		m.run, m.phase = r, watching
 		m.sawVerdict = r.Judge != nil && r.Judge.State == Done
 	}

@@ -240,6 +240,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case seatSentMsg:
+		if m.run != nil && m.run.ID == msg.run {
+			m.run.sent(msg.seat, msg.err)
+			m.refreshAnswer()
+		}
+		return m, nil
+
 	case tickMsg:
 		m.frame++
 		cmds := []tea.Cmd{tick()}
@@ -548,10 +555,11 @@ func (m model) ask() (tea.Model, tea.Cmd) {
 		m.flash = err.Error()
 		return m, nil
 	}
-	r.send()
+	r.Workspace = m.workspace
+	send := r.dispatch()
 	m.run, m.seat, m.phase, m.flash, m.sawVerdict = r, 0, watching, "", false
 	m.refreshAnswer()
-	return m, nil
+	return m, send
 }
 
 func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -940,6 +948,7 @@ func headless(question, seatList, judgeName, ws string) int {
 		fmt.Fprintln(os.Stderr, "council:", err)
 		return 1
 	}
+	r.Workspace = ws
 	r.send()
 	for !r.finished() {
 		time.Sleep(time.Second)

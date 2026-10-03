@@ -34,5 +34,5 @@ func saveSettings(s Settings) error {
 		return err
 	}
 	b, _ := json.MarshalIndent(s, "", "  ")
-	return os.WriteFile(settingsPath(), b, 0o644)
+	return writeAtomic(settingsPath(), b)
 }
