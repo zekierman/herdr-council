@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -143,8 +144,13 @@ func TestAskFocusAndKeys(t *testing.T) {
 	}
 	m, _ = pressKey(m, tea.KeyTab, 0)
 	m, _ = pressKey(m, tea.KeyEnter, 0)
-	if m.judge != 2 {
-		t.Fatalf("Enter did not cycle judge: %d", m.judge)
+	if !m.judgeOpen {
+		t.Fatal("Enter did not open judge picker")
+	}
+	m, _ = pressKey(m, tea.KeyDown, 0)
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if m.judgeOpen || m.judge != 2 {
+		t.Fatalf("judge picker did not select: %d", m.judge)
 	}
 	m, _ = pressKey(m, tea.KeyLeft, 0)
 	if m.judge != 1 {
@@ -239,7 +245,11 @@ func TestUIClickActions(t *testing.T) {
 			t.Fatal("toggle:0 did not deselect agy")
 		}
 		m = clickAction(t, m, "judge")
-		if m.judge != 2 {
+		if !m.judgeOpen {
+			t.Fatal("judge click did not open picker")
+		}
+		m = clickAction(t, m, "judge-pick:2")
+		if m.judge != 2 || m.judgeOpen {
 			t.Fatalf("judge index = %d, want 2", m.judge)
 		}
 		m = clickAction(t, m, "ask")
@@ -427,5 +437,224 @@ func TestWelcomeAndSettingsSnapshots(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(configDir(), "settings.json")); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func manyAgents(n int) []Agent {
+	result := make([]Agent, n)
+	for i := range result {
+		name := "agent"
+		if i%3 == 0 {
+			name = "claude"
+		}
+		result[i] = Agent{Name: name, Pane: fmt.Sprintf("pane-%02d", i), Title: fmt.Sprintf("terminal %02d", i), Status: "idle"}
+	}
+	return result
+}
+
+func manyAskModel(n, w, h int) model {
+	m := newModel("w1")
+	m.w, m.h = w, h
+	m.resize()
+	m.input.SetValue("How should we proceed?")
+	m, _ = func() (model, tea.Cmd) {
+		next, cmd := m.Update(agentsMsg{agents: manyAgents(n)})
+		return next.(model), cmd
+	}()
+	return m
+}
+
+func manyWatchModel(n, w, h int) model {
+	m := manyAskModel(n, w, h)
+	m.phase = watching
+	m.run = &Run{Question: "How should we proceed?", Judge: &Seat{Agent: Agent{Name: "judge", Pane: "judge"}, State: Sending}, Seats: make([]*Seat, n)}
+	for i, a := range m.agents {
+		state := Working
+		if i%3 == 0 {
+			state = Done
+		}
+		m.run.Seats[i] = &Seat{Agent: a, State: state, Sent: time.Now().Add(-time.Minute), Answer: "An independent answer."}
+	}
+	m.seat = n - 1
+	m.keepTabVisible()
+	m.refreshAnswer()
+	return m
+}
+
+func TestManyAgentLayoutsAndDefaults(t *testing.T) {
+	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+		for _, n := range []int{1, 3, 12, 50} {
+			m := manyAskModel(n, size[0], size[1])
+			assertScreen(t, m)
+			want := n <= 6
+			for _, a := range m.agents {
+				if m.picked[a.Pane] != want {
+					t.Fatalf("%d idle default picked=%v want %v", n, m.picked[a.Pane], want)
+				}
+			}
+			if n > 6 {
+				plain := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
+				if !strings.Contains(plain, "select seats: a = all idle") {
+					t.Fatal("large-list selection hint missing")
+				}
+			}
+			m.focus = focusSeats
+			m.cursor = n - 1
+			m.keepSeatVisible()
+			assertScreen(t, m)
+			top, end := m.visibleSeats()
+			if n-1 < top || n-1 >= end {
+				t.Fatalf("%d cursor invisible in [%d,%d)", n, top, end)
+			}
+			m = clickAction(t, m, fmt.Sprintf("toggle:%d", n-1))
+			if m.picked[m.agents[n-1].Pane] == want {
+				t.Fatalf("%d last row click did not toggle", n)
+			}
+			m = clickAction(t, m, "seat-all")
+			if m.selectedCount() != n {
+				t.Fatalf("all selected %d of %d", m.selectedCount(), n)
+			}
+			m = clickAction(t, m, "seat-none")
+			if m.selectedCount() != 0 {
+				t.Fatal("none did not clear")
+			}
+			m.focus = focusSeats
+			m, _ = pressKey(m, 'a', 0)
+			if m.selectedCount() != n {
+				t.Fatal("a did not select all idle")
+			}
+			m, _ = pressKey(m, 'n', 0)
+			if m.selectedCount() != 0 {
+				t.Fatal("n did not clear seats")
+			}
+		}
+	}
+}
+
+func TestManyConfirmationAndJudgePicker(t *testing.T) {
+	fakeAgents(t)
+	m := manyAskModel(12, 60, 24)
+	m = clickAction(t, m, "seat-all")
+	m = clickAction(t, m, "ask")
+	if !m.confirmAsk || m.phase != asking {
+		t.Fatal("more than 8 seats sent without confirmation")
+	}
+	assertScreen(t, m)
+	m, _ = pressKey(m, tea.KeyEsc, 0)
+	if m.confirmAsk || m.phase != asking {
+		t.Fatal("Esc did not cancel confirmation")
+	}
+	m = clickAction(t, m, "judge")
+	if !m.judgeOpen {
+		t.Fatal("judge picker did not open")
+	}
+	assertScreen(t, m)
+	for i := 0; i < 11; i++ {
+		m, _ = pressKey(m, tea.KeyDown, 0)
+	}
+	m = clickAction(t, m, "judge-pick:11")
+	if m.judge != 11 || m.judgeOpen {
+		t.Fatal("picker did not select last judge")
+	}
+}
+
+func TestManySeatWheel(t *testing.T) {
+	m := manyAskModel(50, 60, 24)
+	controlsY := -1
+	for _, z := range m.layout().zones {
+		if z.act == "seat-all" {
+			controlsY = z.y
+			break
+		}
+	}
+	if controlsY < 0 {
+		t.Fatal("seat controls missing")
+	}
+	if !m.wheelOnSeats(50, controlsY+1) {
+		t.Fatal("seat region does not include blank space")
+	}
+	next, _ := m.Update(tea.MouseWheelMsg{X: 50, Y: controlsY + 1, Button: tea.MouseWheelDown})
+	m = next.(model)
+	if m.seatTop == 0 {
+		t.Fatal("wheel did not scroll hovered seats")
+	}
+	m.focus = focusSeats
+	m.cursor = m.seatTop
+	next, _ = m.Update(tea.MouseWheelMsg{X: 50, Y: controlsY + 1, Button: tea.MouseWheelDown})
+	m = next.(model)
+	top, end := m.visibleSeats()
+	if m.cursor < top || m.cursor >= end {
+		t.Fatal("focused seat left viewport on wheel")
+	}
+}
+
+func TestManyWatchingTabs(t *testing.T) {
+	for _, size := range [][2]int{{100, 32}, {60, 24}} {
+		for _, n := range []int{1, 3, 12, 50} {
+			m := manyWatchModel(n, size[0], size[1])
+			assertScreen(t, m)
+			found := false
+			for _, z := range m.layout().zones {
+				if z.act == fmt.Sprintf("seat:%d", n-1) {
+					found = true
+				}
+			}
+			if !found {
+				t.Fatalf("%d selected tab not visible at %dx%d", n, size[0], size[1])
+			}
+			m = clickAction(t, m, fmt.Sprintf("seat:%d", n))
+			if !m.onVerdict() {
+				t.Fatal("fixed verdict tab did not click")
+			}
+			m, _ = pressKey(m, '1', 0)
+			m = clickAction(t, m, "seat:0")
+			if m.seat != 0 {
+				t.Fatal("first seat click failed")
+			}
+			if n > 3 {
+				m = clickAction(t, m, "tab-next")
+				if m.seat == 0 {
+					t.Fatal("next-page click did not advance")
+				}
+				before := m.seat
+				m, _ = pressKey(m, ']', 0)
+				if m.seat <= before {
+					t.Fatal("] did not move to next page")
+				}
+				m, _ = pressKey(m, '[', 0)
+				if m.seat >= before+1 {
+					t.Fatal("[ did not move to previous page")
+				}
+			}
+		}
+	}
+}
+
+func TestManySnapshots(t *testing.T) {
+	ask := manyAskModel(12, 100, 32)
+	for i := range ask.agents {
+		if i != 0 && i != 1 {
+			ask.agents[i].Name = "agent"
+		} else {
+			ask.agents[i].Name = "claude"
+		}
+	}
+	confirm := manyAskModel(12, 100, 32)
+	for i := range confirm.agents {
+		if i != 0 && i != 1 {
+			confirm.agents[i].Name = "agent"
+		} else {
+			confirm.agents[i].Name = "claude"
+		}
+	}
+	confirm = clickAction(t, confirm, "seat-all")
+	confirm = clickAction(t, confirm, "ask")
+	watch := manyWatchModel(50, 100, 32)
+	for _, tc := range []struct {
+		name string
+		m    model
+	}{{"ask-12", ask}, {"confirm-12", confirm}, {"watch-50", watch}} {
+		assertScreen(t, tc.m)
+		t.Logf("%s screen:\n%s", tc.name, styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), ""))
 	}
 }

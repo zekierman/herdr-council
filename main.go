@@ -66,16 +66,22 @@ type model struct {
 	w, h      int
 	frame     int
 
-	input    textarea.Model
-	agents   []Agent
-	picked   map[string]bool
-	judge    int // index into agents
-	focus    askFocus
-	cursor   int
-	agentErr string
+	input       textarea.Model
+	agents      []Agent
+	picked      map[string]bool
+	judge       int // index into agents
+	focus       askFocus
+	cursor      int
+	seatTop     int
+	confirmAsk  bool
+	judgeOpen   bool
+	judgeCursor int
+	judgeTop    int
+	agentErr    string
 
 	run            *Run
 	seat           int // len(run.Seats) selects the verdict
+	tabStart       int
 	sawVerdict     bool
 	answer         viewport.Model
 	flash          string
@@ -170,6 +176,22 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 	}
+	if m.judgeOpen {
+		if key, ok := msg.(tea.KeyPressMsg); ok {
+			return m.updateJudgePicker(key)
+		}
+		if click, ok := msg.(tea.MouseClickMsg); ok {
+			mo := click.Mouse()
+			if mo.Button == tea.MouseLeft {
+				for _, z := range m.layout().zones {
+					if mo.Y == z.y && mo.X >= z.x0 && mo.X < z.x1 {
+						return m.do(z.act)
+					}
+				}
+			}
+			return m, nil
+		}
+	}
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		m.w, m.h = msg.Width, msg.Height
@@ -185,8 +207,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		first := len(m.agents) == 0
 		m.agents = msg.agents
 		if first {
+			eligible := 0
+			for _, a := range m.agents {
+				if a.Status == "idle" || a.Status == "done" {
+					eligible++
+				}
+			}
 			for i, a := range m.agents {
-				m.picked[a.Pane] = a.Status == "idle" || a.Status == "done"
+				m.picked[a.Pane] = eligible <= 6 && (a.Status == "idle" || a.Status == "done")
 				if a.Name == "claude" && m.judge < 0 {
 					m.judge = i
 				}
@@ -195,6 +223,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.judge < 0 || m.judge >= len(m.agents) {
 			m.judge = 0
 		}
+		if m.cursor >= len(m.agents) {
+			m.cursor = max(0, len(m.agents)-1)
+		}
+		m.keepSeatVisible()
 		if m.run != nil {
 			status := map[string]string{}
 			for _, a := range m.agents {
@@ -229,6 +261,27 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case tea.MouseWheelMsg:
+		mo := msg.Mouse()
+		if m.judgeOpen {
+			if mo.Button == tea.MouseWheelUp {
+				m.judgeCursor = max(0, m.judgeCursor-1)
+			} else {
+				m.judgeCursor = min(len(m.agents)-1, m.judgeCursor+1)
+			}
+			m.keepJudgeVisible()
+			return m, nil
+		}
+		if m.phase == asking && (m.focus == focusSeats || m.wheelOnSeats(mo.X, mo.Y)) {
+			if mo.Button == tea.MouseWheelUp {
+				m.seatTop = max(0, m.seatTop-2)
+			} else {
+				m.seatTop = min(max(0, len(m.agents)-m.seatListHeight()), m.seatTop+2)
+			}
+			if m.focus == focusSeats && len(m.agents) > 0 {
+				m.cursor = min(max(m.cursor, m.seatTop), min(len(m.agents)-1, m.seatTop+m.seatListHeight()-1))
+			}
+			return m, nil
+		}
 		if m.phase == watching {
 			var cmd tea.Cmd
 			m.answer, cmd = m.answer.Update(msg)
@@ -280,27 +333,65 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 		m.focus = focusAsk
 		m.input.Blur()
 		return m.ask()
+	case act == "confirm-cancel":
+		m.confirmAsk = false
+		return m, nil
+	case act == "seat-all", act == "seat-none":
+		m.focus = focusSeats
+		m.input.Blur()
+		m.confirmAsk = false
+		for _, a := range m.agents {
+			m.picked[a.Pane] = act == "seat-all" && (a.Status == "idle" || a.Status == "done")
+		}
+		return m, nil
 	case act == "input":
 		m.focus = focusQuestion
 		return m, m.input.Focus()
 	case strings.HasPrefix(act, "toggle:"):
 		var i int
 		fmt.Sscanf(act, "toggle:%d", &i)
-		if i < len(m.agents) {
+		if i >= 0 && i < len(m.agents) {
 			m.focus = focusSeats
 			m.input.Blur()
 			p := m.agents[i].Pane
 			m.picked[p] = !m.picked[p]
 			m.cursor = i
+			m.confirmAsk = false
+			m.keepSeatVisible()
 		}
 	case act == "judge":
+		if len(m.agents) == 0 {
+			m.flash = "no agents in this workspace yet"
+			return m, nil
+		}
 		m.focus = focusJudge
 		m.input.Blur()
-		if len(m.agents) > 0 {
-			m.judge = (m.judge + 1) % len(m.agents)
+		m.judgeOpen = true
+		m.judgeCursor = max(0, m.judge)
+		m.keepJudgeVisible()
+		return m, nil
+	case strings.HasPrefix(act, "judge-pick:"):
+		var i int
+		fmt.Sscanf(act, "judge-pick:%d", &i)
+		if i >= 0 && i < len(m.agents) {
+			m.judge = i
+			m.judgeOpen = false
+			m.confirmAsk = false
 		}
+		return m, nil
+	case act == "judge-cancel":
+		m.judgeOpen = false
+		return m, nil
 	case strings.HasPrefix(act, "seat:"):
 		fmt.Sscanf(act, "seat:%d", &m.seat)
+		m.keepTabVisible()
+	case act == "tab-prev", act == "tab-next":
+		step := m.tabPageSize()
+		if act == "tab-prev" {
+			step = -step
+		}
+		m.seat = min(len(m.run.Seats)-1, max(0, m.seat+step))
+		m.keepTabVisible()
 	case act == "copy":
 		if body := m.currentText(); body != "" && clipboard.WriteAll(body) == nil {
 			m.flash = "copied"
@@ -321,7 +412,16 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 		}
 	case act == "new":
 		nm := newModel(m.workspace)
-		nm.w, nm.h, nm.agents, nm.picked, nm.judge = m.w, m.h, m.agents, m.picked, m.judge
+		nm.w, nm.h, nm.agents, nm.judge = m.w, m.h, m.agents, m.judge
+		idle := 0
+		for _, a := range nm.agents {
+			if a.Status == "idle" || a.Status == "done" {
+				idle++
+			}
+		}
+		for _, a := range nm.agents {
+			nm.picked[a.Pane] = idle <= 6 && (a.Status == "idle" || a.Status == "done")
+		}
 		nm.settings, nm.shortcut = m.settings, m.shortcut
 		nm.resize()
 		return nm, nm.input.Focus()
@@ -334,7 +434,18 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch msg.String() {
 	case "esc":
+		if m.confirmAsk {
+			m.confirmAsk = false
+			return m, nil
+		}
 		return m, tea.Quit
+	case "a", "n":
+		if m.focus == focusSeats {
+			if msg.String() == "a" {
+				return m.do("seat-all")
+			}
+			return m.do("seat-none")
+		}
 	case "s":
 		if m.focus != focusQuestion {
 			return m.do("settings")
@@ -346,6 +457,7 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "up", "k":
 		if m.focus == focusSeats && m.cursor > 0 {
 			m.cursor--
+			m.keepSeatVisible()
 			return m, nil
 		}
 		if m.focus != focusQuestion || msg.String() == "up" {
@@ -354,6 +466,7 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "down", "j":
 		if m.focus == focusSeats && m.cursor < len(m.agents)-1 {
 			m.cursor++
+			m.keepSeatVisible()
 			return m, nil
 		}
 		if m.focus != focusQuestion || msg.String() == "down" {
@@ -385,6 +498,7 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 					step = -1
 				}
 				m.judge = (m.judge + len(m.agents) + step) % len(m.agents)
+				m.confirmAsk = false
 			}
 			return m, nil
 		}
@@ -396,6 +510,7 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if m.focus != focusQuestion {
 		return m, nil
 	}
+	m.confirmAsk = false
 	var cmd tea.Cmd
 	m.input, cmd = m.input.Update(msg)
 	return m, cmd
@@ -422,6 +537,12 @@ func (m model) ask() (tea.Model, tea.Cmd) {
 		m.flash = "write a question and pick at least one seat"
 		return m, nil
 	}
+	if len(seats) > 8 && !m.confirmAsk {
+		m.confirmAsk = true
+		m.flash = ""
+		return m, nil
+	}
+	m.confirmAsk = false
 	r, err := newRun(q, seats, m.agents[m.judge])
 	if err != nil {
 		m.flash = err.Error()
@@ -442,6 +563,10 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		m.seat = (m.seat + 1) % n
 	case "shift+tab", "left", "h":
 		m.seat = (m.seat + n - 1) % n
+	case "[", "pgup":
+		m.seat = max(0, m.seat-m.tabPageSize())
+	case "]", "pgdown":
+		m.seat = min(n-1, m.seat+m.tabPageSize())
 	case "v":
 		m.seat = len(m.run.Seats)
 	case "c":
@@ -462,6 +587,7 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	m.flash = ""
+	m.keepTabVisible()
 	m.refreshAnswer()
 	return m, nil
 }
@@ -612,6 +738,11 @@ func (m model) layout() screen {
 		base.settingsOpen = false
 		return m.settingsOverlay(base.layout())
 	}
+	if m.judgeOpen {
+		base := m
+		base.judgeOpen = false
+		return m.judgePickerOverlay(base.layout())
+	}
 	if m.phase == welcoming {
 		return m.welcomeLayout()
 	}
@@ -637,14 +768,22 @@ func (m model) layout() screen {
 		sc.raw(indent(m.input.View()), "input")
 		pause()
 		addAskHeading(&sc, m.focus == focusSeats, "02", "Seats", "space", "select", formWidth)
-		sc.add(seg("     " + dim.Render(shorten("Each agent answers alone, unseen by the others.", formWidth-5))))
+		sc.add(seg("     " + dim.Render(shorten(m.seatSummary(), formWidth-5))))
+		sc.add(seg("     "), act(accent.Render("all"), "seat-all"), seg(dim.Render(" / ")), act(accent.Render("none"), "seat-none"), seg("  "+dim.Render(shorten(m.seatHint(), max(0, formWidth-20)))))
 		if m.agentErr != "" {
 			sc.add(seg(" " + bad.Render(shorten(m.agentErr, formWidth-2))))
 		}
 		if len(m.agents) == 0 && m.agentErr == "" {
 			sc.add(seg(dim.Render("   no agents in this workspace yet")))
 		}
-		for i, a := range m.agents {
+		top, bottom := m.visibleSeats()
+		if top > 0 {
+			sc.add(seg("     " + dim.Render(fmt.Sprintf("↑ %d more", top))))
+		} else {
+			sc.add(seg(" "))
+		}
+		for i := top; i < bottom; i++ {
+			a := m.agents[i]
 			box := dim.Render("[ ]")
 			if m.picked[a.Pane] {
 				box = accent.Render("[x]")
@@ -653,7 +792,12 @@ func (m model) layout() screen {
 			if m.focus == focusSeats && i == m.cursor {
 				pre = accent.Render(" › ")
 			}
-			sc.add(act(pre+box+" "+fmt.Sprintf("%-12s", shorten(a.Name, 12))+" "+dim.Render(shorten(a.Status, 13)), fmt.Sprintf("toggle:%d", i)))
+			sc.add(act(shorten(pre+box+" "+m.agentRow(i, formWidth-8), formWidth), fmt.Sprintf("toggle:%d", i)))
+		}
+		if bottom < len(m.agents) {
+			sc.add(seg("     " + dim.Render(fmt.Sprintf("↓ %d more", len(m.agents)-bottom))))
+		} else {
+			sc.add(seg(" "))
 		}
 		pause()
 		addAskHeading(&sc, m.focus == focusJudge, "03", "Judge", "←→", "cycle", formWidth)
@@ -666,7 +810,7 @@ func (m model) layout() screen {
 		if m.focus == focusJudge {
 			judgeStyle = primary
 		}
-		sc.add(seg("     "), act(judgeStyle.Render("‹ "+judge+" ›"), "judge"))
+		sc.add(seg("     "), act(judgeStyle.Render("‹ "+judge+" ›  Pick judge"), "judge"))
 		pause()
 		askStyle, closeStyle := button, button
 		if m.focus == focusAsk {
@@ -675,7 +819,14 @@ func (m model) layout() screen {
 		if m.focus == focusClose {
 			closeStyle = primary
 		}
-		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render("Ask the council"), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"), seg("  "), act(button.Render("⚙ Settings"), "settings"))
+		askLabel := "Ask the council"
+		if m.confirmAsk {
+			askLabel = fmt.Sprintf("Ask %d agents? Confirm", m.selectedCount())
+		}
+		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render(askLabel), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"), seg("  "), act(button.Render("⚙ Settings"), "settings"))
+		if m.confirmAsk {
+			sc.add(seg(" " + warn.Render(shorten("Press Enter or click Confirm to send · Esc to cancel", formWidth-2))))
+		}
 		if m.flash != "" {
 			sc.add(seg(" " + warn.Render(shorten(m.flash, formWidth-2))))
 		}
@@ -702,6 +853,7 @@ func (m model) layout() screen {
 	for _, row := range m.tabRows(now, width) {
 		sc.add(row...)
 	}
+	sc.add(seg(" " + dim.Render(m.statusSummary())))
 	sc.add(seg(rule))
 	if m.onVerdict() {
 		sc.add(seg(" " + accent.Render(".----< VERDICT >----.") + "  " + bold.Render(verdictState(r.Judge))))

@@ -45,50 +45,24 @@ func verdictState(s *Seat) string {
 	}
 }
 
-// tabRows wraps complete clickable tabs; each action spans only its visible label.
+// tabRows keeps one compact strip and a fixed verdict tab, regardless of seat count.
 func (m model) tabRows(now time.Time, width int) [][][2]string {
-	var rows [][][2]string
+	_, _ = now, width
+	start, end := m.tabWindow()
 	row := [][2]string{seg(" ")}
-	used := 1
-	add := func(label, action string) {
-		cellWidth := lipgloss.Width(label)
-		gap := 0
-		if used > 1 {
-			gap = 2
-		}
-		if used > 1 && used+gap+cellWidth > width {
-			rows = append(rows, row)
-			row = [][2]string{seg(" ")}
-			used = 1
-			gap = 0
-		}
-		if gap > 0 {
-			row = append(row, seg("  "))
-			used += 2
-		}
-		row = append(row, act(label, action))
-		used += cellWidth
+	if start > 0 {
+		row = append(row, act(dim.Render(fmt.Sprintf("‹ %d more", start)), "tab-prev"), seg(" "))
 	}
-	for i, s := range m.run.Seats {
-		name := shorten(s.Agent.Name, 12)
-		label := fmt.Sprintf("%d %s ", i+1, name)
-		if i == m.seat {
-			label = accent.Render("[" + label + "]")
-		} else {
-			label = dim.Render("[" + label + "]")
-		}
-		add(label+badge(s, m.frame, now), fmt.Sprintf("seat:%d", i))
+	for i := start; i < end; i++ {
+		row = append(row, act(compactTab(m.run.Seats[i], i, m.seat), fmt.Sprintf("seat:%d", i)), seg(" "))
 	}
-	j := m.run.Judge
-	vb := dim.Render("· waiting")
-	if j != nil && !j.Sent.IsZero() {
-		vb = badge(j, m.frame, now)
+	if end < len(m.run.Seats) {
+		row = append(row, act(dim.Render(fmt.Sprintf("%d more ›", len(m.run.Seats)-end)), "tab-next"), seg(" "))
 	}
-	vlabel := dim.Render("[VERDICT] ")
+	v := dim.Render("[VERDICT]")
 	if m.onVerdict() {
-		vlabel = accent.Render("[VERDICT] ")
+		v = accent.Render("[VERDICT]")
 	}
-	add(vlabel+vb, fmt.Sprintf("seat:%d", len(m.run.Seats)))
-	rows = append(rows, row)
-	return rows
+	row = append(row, act(v, fmt.Sprintf("seat:%d", len(m.run.Seats))))
+	return [][][2]string{row}
 }

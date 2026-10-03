@@ -63,7 +63,7 @@ func askLegend(focus askFocus, width int) [][][2]string {
 	case focusSeats:
 		items = append(items, legendItem{"↑↓", "row", ""}, legendItem{"space/enter", "select", ""})
 	case focusJudge:
-		items = append(items, legendItem{"S-tab", "back", ""}, legendItem{"←→/enter", "cycle", ""})
+		items = append(items, legendItem{"S-tab", "back", ""}, legendItem{"←→/enter", "cycle/pick", ""})
 	case focusAsk:
 		items = append(items, legendItem{"S-tab", "back", ""}, legendItem{"enter", "send", ""})
 	case focusClose:
@@ -75,6 +75,7 @@ func askLegend(focus askFocus, width int) [][][2]string {
 func watchLegend(width int) [][][2]string {
 	return keyLegend([]legendItem{
 		{"←→/tab", "switch", ""}, {"1-9", "seat", ""}, {"v", "verdict", ""},
+		{"[/]", "page", ""},
 		{"↑↓/wheel", "scroll", ""}, {"c", "copy", ""}, {"f", "agent", ""},
 		{"j", "judge", ""}, {"n", "new", ""}, {"q", "close", ""}, {"?", "help", "help"},
 	}, width)
@@ -88,8 +89,9 @@ var askHelp = []helpEntry{
 	{"k/j", "seat row"},
 	{"enter", "use focused"},
 	{"space/x", "select seat"},
+	{"a/n", "all idle / none"},
 	{"←→", "cycle judge"},
-	{"J", "cycle judge"},
+	{"enter", "open judge picker"},
 	{"s", "settings (off input)"},
 	{"?", "toggle help"},
 	{"esc", "close"},
@@ -101,6 +103,7 @@ var watchHelp = []helpEntry{
 	{"←→/tab", "switch tab"},
 	{"S-tab/h/l", "switch tab"},
 	{"1-9", "seat"},
+	{"[/]", "tab page"},
 	{"v", "verdict"},
 	{"↑↓/wheel", "scroll"},
 	{"c", "copy"},
