@@ -99,3 +99,21 @@ func TestGrowingFileIsNotSilent(t *testing.T) {
 		}
 	}
 }
+
+func TestListRunsNewestFirstPerWorkspace(t *testing.T) {
+	fakeAgents(t)
+	a := []Agent{{Name: "claude", Pane: "p1"}}
+	for _, q := range []string{"first in A", "only in B", "second in A"} {
+		r, _ := newRun(q, a, a[0])
+		r.Workspace = map[bool]string{true: "wB", false: "wA"}[q == "only in B"]
+		r.send()
+		time.Sleep(5 * time.Millisecond)
+	}
+	got := listRuns("wA")
+	if len(got) != 2 || got[0].Question != "second in A" || got[1].Question != "first in A" {
+		t.Fatalf("wA runs = %v", got)
+	}
+	if all := listRuns(""); len(all) != 3 {
+		t.Fatalf("all runs = %d, want 3", len(all))
+	}
+}

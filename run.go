@@ -402,44 +402,59 @@ func fromMeta(sm seatMeta) *Seat {
 // latestRun reopens the newest run asked in this workspace within maxAge, so closing the popup
 // never loses a question: the agents keep writing and the next open shows their answers.
 func latestRun(maxAge time.Duration, workspace string) *Run {
-	paths, _ := filepath.Glob(filepath.Join(stateDir(), "runs", "*", "run.json"))
-	sort.Sort(sort.Reverse(sort.StringSlice(paths)))
-	for _, path := range paths {
-		b, err := os.ReadFile(path)
-		if err != nil {
-			continue
-		}
-		var m meta
-		if json.Unmarshal(b, &m) != nil || len(m.Seats) == 0 {
-			continue
-		}
-		if time.Since(m.Seats[0].Sent) > maxAge {
+	for _, r := range listRuns(workspace) {
+		if time.Since(r.Seats[0].Sent) > maxAge {
 			return nil // newest first: everything after this is older
-		}
-		if workspace != "" && m.Workspace != workspace {
-			continue
-		}
-		r := &Run{ID: m.ID, Dir: filepath.Dir(path), Question: m.Question, Workspace: m.Workspace, Order: m.Order, Judge: fromMeta(m.Judge), PeerReview: m.Peer, Letters: m.Letters}
-		for _, sm := range m.Seats {
-			r.Seats = append(r.Seats, fromMeta(sm))
-		}
-		if m.Reviews != nil {
-			r.Reviews = make([]*Seat, len(m.Reviews))
-			for i, sm := range m.Reviews {
-				if sm.File != "" {
-					r.Reviews[i] = fromMeta(sm)
-				}
-			}
-			if r.reviewsSettled() {
-				r.Ranking = r.aggregate()
-			}
-		}
-		if len(r.Order) != len(r.Seats) {
-			r.Order = rand.Perm(len(r.Seats))
 		}
 		return r
 	}
 	return nil
+}
+
+// listRuns returns this workspace's runs, newest first ("" lists every workspace). Runs older than
+// keepRuns are pruned at startup, so this stays a short list.
+func listRuns(workspace string) []*Run {
+	paths, _ := filepath.Glob(filepath.Join(stateDir(), "runs", "*", "run.json"))
+	var out []*Run
+	for _, path := range paths {
+		if r := loadRun(path); r != nil && (workspace == "" || r.Workspace == workspace) {
+			out = append(out, r)
+		}
+	}
+	// by send time, not ID: two runs in the same second differ only in their random suffix
+	sort.SliceStable(out, func(i, j int) bool { return out[i].Seats[0].Sent.After(out[j].Seats[0].Sent) })
+	return out
+}
+
+// loadRun rebuilds a run from its run.json, re-reading any answers and reviews that landed since.
+func loadRun(path string) *Run {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return nil
+	}
+	var m meta
+	if json.Unmarshal(b, &m) != nil || len(m.Seats) == 0 {
+		return nil
+	}
+	r := &Run{ID: m.ID, Dir: filepath.Dir(path), Question: m.Question, Workspace: m.Workspace, Order: m.Order, Judge: fromMeta(m.Judge), PeerReview: m.Peer, Letters: m.Letters}
+	for _, sm := range m.Seats {
+		r.Seats = append(r.Seats, fromMeta(sm))
+	}
+	if m.Reviews != nil {
+		r.Reviews = make([]*Seat, len(m.Reviews))
+		for i, sm := range m.Reviews {
+			if sm.File != "" {
+				r.Reviews[i] = fromMeta(sm)
+			}
+		}
+		if r.reviewsSettled() {
+			r.Ranking = r.aggregate()
+		}
+	}
+	if len(r.Order) != len(r.Seats) {
+		r.Order = rand.Perm(len(r.Seats))
+	}
+	return r
 }
 
 // pruneRuns deletes runs older than keep, so the state dir doesn't grow forever.
