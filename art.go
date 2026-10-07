@@ -20,7 +20,7 @@ const (
 var (
 	artDots    = drawScale()
 	councilArt = toBraille(artDots)
-	artInk     = lipgloss.NewStyle().Foreground(lipgloss.Color("#8b949e"))
+	artInk     = colour(mutedHex)
 )
 
 // drawScale plots every shape in terms of the distance from the centre line, so the
@@ -92,13 +92,6 @@ func toBraille(g [][]bool) []string {
 }
 
 func styledArtRow(row string) string { return artInk.Render(row) }
-
-func (m model) artPosition() (int, bool) {
-	if m.phase != asking || m.w < 88 || m.h < 28 {
-		return 0, false
-	}
-	return m.w - artWidth - 4, true
-}
 
 // Art is static; appending it after the interactive left column leaves every
 // screen.add/raw click zone at its original x coordinate.

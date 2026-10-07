@@ -1,11 +1,11 @@
 package main
 
 import (
-	"strings"
 	"time"
 
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
+	"github.com/charmbracelet/x/ansi"
 )
 
 // The UI indirection keeps tests away from the user's Herdr configuration.
@@ -24,65 +24,10 @@ func launchModel(workspace string) model {
 		return m
 	}
 	if r := latestRun(30*time.Minute, m.workspace); r != nil {
-		m.run, m.phase = r, watching
+		m.run, m.phase, m.page = r, watching, "run"
 		m.sawVerdict = r.Judge != nil && r.Judge.State == Done
 	}
 	return m
-}
-
-func (m model) welcomeLayout() screen {
-	var sc screen
-	width := max(20, m.w)
-	formWidth := width
-	artX, showArt := 0, m.w >= 88 && m.h >= 28
-	if showArt {
-		artX = m.w - artWidth - 4
-		formWidth = artX - 3
-	}
-	sc.add(seg(" " + bold.Render("WELCOME TO COUNCIL")))
-	sc.add(seg(" " + dim.Render(shorten("One question. Independent answers. A blind verdict.", formWidth-1))))
-	sc.blank()
-	sc.add(seg(" " + accent.Render("01") + "  Ask one question"))
-	sc.add(seg(" " + accent.Render("02") + "  Seats answer on their own"))
-	sc.add(seg(" " + accent.Render("03") + "  Judge reads A/B/C; names reveal after verdict"))
-	sc.blank()
-	sc.add(seg(" " + bold.Render("GETTING BACK TO COUNCIL")))
-	sc.add(seg(" " + dim.Render("Council tab in Herdr's tab bar")))
-	shortcutWay := "Optional shortcut: add one below"
-	if m.shortcut != "" {
-		shortcutWay = "Shortcut: " + m.shortcut
-	}
-	sc.add(seg(" " + dim.Render(shorten(shortcutWay, formWidth-1))))
-	sc.add(seg(" " + dim.Render(shorten(reopenCommand, formWidth-1))))
-	sc.blank()
-	auto := "[ ]"
-	if m.settings.AutoTab {
-		auto = "[x]"
-	}
-	sc.add(act(askFocusMark(m.welcomeFocus == 0)+accent.Render(auto)+" "+text.Render("Keep a Council tab in every workspace"), "welcome-auto"))
-	sc.add(seg("    " + dim.Render(shorten("Closed tabs return on the next Herdr start.", formWidth-4))))
-	sc.add(welcomeShortcutButton(m, "welcome-shortcut")...)
-	if m.preferenceNote != "" {
-		sc.add(seg("    " + warn.Render(shorten(m.preferenceNote, formWidth-4))))
-	}
-	sc.blank()
-	start := button
-	if m.welcomeFocus == 2 {
-		start = primary
-	}
-	sc.add(act(askFocusMark(m.welcomeFocus == 2)+start.Render("Start"), "welcome-start"))
-	if m.h >= 24 {
-		for len(sc.lines) < m.h-1 {
-			sc.blank()
-		}
-	}
-	for _, row := range keyLegend([]legendItem{{"tab/S-tab", "focus", ""}, {"enter/space", "use", ""}, {"?", "help", "help"}}, width) {
-		sc.add(row...)
-	}
-	if showArt {
-		placeCouncilArt(&sc, artX)
-	}
-	return sc
 }
 
 func welcomeShortcutButton(m model, action string) [][2]string {
@@ -209,61 +154,13 @@ func (m model) preferenceAction(action string) model {
 		}
 	case "settings-close":
 		m.settingsOpen = false
+		m.page = m.settingsReturn
+		if m.page == "" {
+			m.page = "ask"
+		}
 		m.preferenceNote = ""
 	}
 	return m
-}
-
-func (m model) settingsOverlay(base screen) screen {
-	width, height := max(20, m.w), max(10, m.h)
-	panelWidth := min(70, width-4)
-	var panel screen
-	border := dim.Render("+" + strings.Repeat("-", panelWidth-2) + "+")
-	panel.add(seg(border))
-	panel.add(seg("| " + bold.Render("⚙ SETTINGS") + strings.Repeat(" ", panelWidth-4-lipgloss.Width("⚙ SETTINGS")) + " |"))
-	panel.add(seg("| " + paddedCell(dim.Render("Choose how Council stays within reach."), panelWidth-4) + " |"))
-	panel.add(seg(border))
-	auto := "[ ]"
-	if m.settings.AutoTab {
-		auto = "[x]"
-	}
-	autoLine := askFocusMark(m.settingsFocus == 0) + accent.Render(auto) + " Keep a Council tab in every workspace"
-	panel.add(seg("| "), act(paddedCell(autoLine, panelWidth-4), "settings-auto"), seg(" |"))
-	panel.add(seg("| " + paddedCell(dim.Render("  A closed tab returns at the next Herdr start."), panelWidth-4) + " |"))
-	shortcutLine := ""
-	if m.shortcut != "" {
-		shortcutLine = askFocusMark(m.settingsFocus == 1) + dim.Render("[ Add shortcut ]") + "  " + good.Render("Council is on "+m.shortcut)
-		panel.add(seg("| " + paddedCell(shortcutLine, panelWidth-4) + " |"))
-	} else {
-		style := button
-		if m.settingsFocus == 1 {
-			style = primary
-		}
-		btn := askFocusMark(m.settingsFocus == 1) + style.Render("Add shortcut")
-		panel.add(seg("| "), act(btn, "settings-shortcut"), seg(strings.Repeat(" ", panelWidth-4-lipgloss.Width(btn))+" |"))
-	}
-	if m.preferenceNote != "" {
-		panel.add(seg("| " + paddedCell(warn.Render(shorten(m.preferenceNote, panelWidth-4)), panelWidth-4) + " |"))
-	}
-	panel.add(seg(border))
-	panel.add(seg("| " + paddedCell(bold.Render("GETTING BACK TO COUNCIL"), panelWidth-4) + " |"))
-	panel.add(seg("| " + paddedCell(dim.Render("Council tab  ·  "+shortcutWay(m.shortcut)), panelWidth-4) + " |"))
-	if lipgloss.Width(reopenCommand) <= panelWidth-4 {
-		panel.add(seg("| " + paddedCell(dim.Render(reopenCommand), panelWidth-4) + " |"))
-	} else {
-		panel.add(seg("| " + paddedCell(dim.Render("herdr plugin action invoke tab"), panelWidth-4) + " |"))
-		panel.add(seg("| " + paddedCell(dim.Render("  --plugin herdr-council"), panelWidth-4) + " |"))
-	}
-	panel.add(seg(border))
-	closeStyle := button
-	if m.settingsFocus == 2 {
-		closeStyle = primary
-	}
-	closeLabel := askFocusMark(m.settingsFocus == 2) + closeStyle.Render("Close")
-	panel.add(seg("| "), act(closeLabel, "settings-close"), seg(strings.Repeat(" ", panelWidth-4-lipgloss.Width(closeLabel))+" |"))
-	panel.add(seg("| " + paddedCell(dim.Render("tab/S-tab focus  ·  enter/space use  ·  esc/s close"), panelWidth-4) + " |"))
-	panel.add(seg(border))
-	return placeOverlay(base, panel, width, height)
 }
 
 func shortcutWay(key string) string {
@@ -283,10 +180,12 @@ func placeOverlay(base, panel screen, width, height int) screen {
 		if y+i >= len(base.lines) {
 			break
 		}
-		base.lines[y+i] = strings.Repeat(" ", x) + line
+		base.lines[y+i] = fit(ansi.Cut(base.lines[y+i], 0, x), x) + line + ansi.Cut(base.lines[y+i], x+lipgloss.Width(line), width)
 	}
 	for _, z := range panel.zones {
-		base.zones = append(base.zones, zone{z.y + y, z.x0 + x, z.x1 + x, z.act})
+		if z.y+y < height {
+			base.zones = append(base.zones, zone{z.y + y, z.x0 + x, z.x1 + x, z.act})
+		}
 	}
 	return base
 }

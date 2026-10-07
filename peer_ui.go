@@ -2,9 +2,7 @@ package main
 
 import (
 	"fmt"
-	"time"
-
-	"charm.land/lipgloss/v2"
+	"strings"
 )
 
 func (m *model) syncPeerDefault() {
@@ -28,10 +26,8 @@ func (m model) stageLine() string {
 		answer = "✓"
 	}
 	peer := r.PeerReview && (r.answered() >= minAnswersForReview || r.reviewsStarted())
-	verdictNumber := 2
-	line := "1 Answers " + answer
+	line := "Answers " + answer
 	if peer {
-		verdictNumber = 3
 		progress := "…"
 		if r.reviewsStarted() {
 			done, total := 0, 0
@@ -48,30 +44,43 @@ func (m model) stageLine() string {
 				progress = "✓"
 			}
 		}
-		line += " · 2 Peer review " + progress
+		line += " · Peer review " + progress
 	}
 	verdict := "…"
-	if r.Judge.State == Done {
+	if r.Judge != nil && r.Judge.State == Done {
 		verdict = "✓"
 	}
-	if r.Judge.State == Failed {
+	if r.Judge != nil && r.Judge.State == Failed {
 		verdict = "!"
 	}
-	return fmt.Sprintf("%s · %d Verdict %s", line, verdictNumber, verdict)
-}
-
-func (m model) reviewStatus(now time.Time) string {
-	if !m.reviewAvailable() {
-		return ""
+	if r.Judge == nil {
+		verdict = "—"
 	}
-	rv := m.run.Reviews[m.seat]
-	return "review " + badge(rv, m.frame, now)
+	return fmt.Sprintf("%s · Verdict %s", line, verdict)
 }
 
-func (m model) verdictBody(wrap lipgloss.Style) string {
-	body := m.verdictStatus(wrap)
-	if ranking := m.run.RankingText(m.run.Judge.State == Done); ranking != "" {
-		return bold.Render("PEER RANKING") + "\n" + wrap.Render(ranking) + "\n\n" + body
+func (m model) verdictBody(width int) string {
+	body := m.verdictStatus(width)
+	ready := m.run.Judge != nil && m.run.Judge.State == Done
+	if !ready {
+		body = wrapBody(body, width)
+	}
+	if ready {
+		if reveal := m.run.Reveal(); len(reveal) > 0 {
+			body += "\n\n" + wrapBody(dim.Render("Revealed: "+strings.Join(reveal, " · ")), width)
+		}
+	}
+	if ranking := m.run.RankingText(ready); ranking != "" {
+		var rows []string
+		rows = append(rows, dim.Render("  Answer    Avg   Reviews"))
+		for i, row := range m.run.Ranking {
+			label := fmt.Sprintf("%d. %-7s %4.1f   %d", i+1, "Answer "+row.Letter, row.Avg, row.Votes)
+			if ready {
+				label += "  (" + m.run.Seats[row.Seat].Agent.Name + ")"
+			}
+			rows = append(rows, text.Bold(false).Render(label))
+		}
+		return accent.Bold(true).Render("PEER RANKING") + "\n" + wrapBody(strings.Join(rows, "\n"), width) + "\n\n" + body
 	}
 	return body
 }

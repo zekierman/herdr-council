@@ -38,6 +38,7 @@ func watchingModel(w, h int) model {
 	m := askingModel(w, h)
 	now := time.Now()
 	m.phase = watching
+	m.page = "run"
 	m.run = &Run{
 		Question: "Where should we start?",
 		Seats: []*Seat{
@@ -78,8 +79,8 @@ func TestUILayoutFits(t *testing.T) {
 	}
 	wide := styleEscape.ReplaceAllString(strings.Join(askingModel(100, 32).layout().lines, "\n"), "")
 	narrow := styleEscape.ReplaceAllString(strings.Join(askingModel(60, 24).layout().lines, "\n"), "")
-	if !strings.Contains(wide, strings.TrimSpace(councilArt[3])) || strings.Contains(narrow, strings.TrimSpace(councilArt[3])) {
-		t.Fatal("art should appear only where it fits")
+	if strings.Contains(wide, strings.TrimSpace(councilArt[3])) || strings.Contains(narrow, strings.TrimSpace(councilArt[3])) {
+		t.Fatal("art should stay on the welcome screen")
 	}
 }
 
@@ -130,10 +131,9 @@ func TestAskFocusAndKeys(t *testing.T) {
 	}
 	m, _ = pressKey(m, tea.KeyUp, 0)
 	m, _ = pressKey(m, tea.KeyUp, 0)
-	if m.focus != focusQuestion {
-		t.Fatalf("up at first row did not return to Question: %d", m.focus)
+	if m.focus != focusSeats || m.cursor != 0 {
+		t.Fatalf("up at first row should keep Seats focused: %d", m.focus)
 	}
-	m, _ = pressKey(m, tea.KeyTab, 0)
 	m, _ = pressKey(m, tea.KeyEnter, 0)
 	if m.picked["p1"] {
 		t.Fatal("Enter did not toggle focused seat")
@@ -177,19 +177,16 @@ func TestAskFocusAndKeys(t *testing.T) {
 
 func TestHelpAndContextHint(t *testing.T) {
 	for _, size := range [][2]int{{100, 32}, {60, 24}} {
-		for focus := focusQuestion; focus < focusCount; focus++ {
-			if rows := askLegend(focus, size[0]); len(rows) != 1 {
-				t.Fatalf("%dx%d focus %d has %d hint rows", size[0], size[1], focus, len(rows))
-			}
+		footer := askingModel(size[0], size[1]).layout().lines[size[1]-1]
+		if strings.Count(footer, "·") > 3 {
+			t.Fatal("footer has more than four hints")
 		}
 		m := askingModel(size[0], size[1])
-		questionLines := m.layout().lines
-		questionBar := styleEscape.ReplaceAllString(strings.Join(questionLines[max(0, len(questionLines)-2):], "\n"), "")
+		questionBar := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
 		m, _ = pressKey(m, tea.KeyTab, 0)
-		seatLines := m.layout().lines
-		seatsBar := styleEscape.ReplaceAllString(strings.Join(seatLines[max(0, len(seatLines)-2):], "\n"), "")
-		if questionBar == seatsBar || !strings.Contains(seatsBar, "select") || !strings.Contains(seatsBar, "help") {
-			t.Fatalf("%dx%d context bar did not change: question=%q seats=%q", size[0], size[1], questionBar, seatsBar)
+		seatsBar := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
+		if questionBar == seatsBar || !strings.Contains(seatsBar, "? help") {
+			t.Fatalf("%dx%d focus did not change: question=%q seats=%q", size[0], size[1], questionBar, seatsBar)
 		}
 		m, _ = pressKey(m, '?', 0)
 		if !m.help || !strings.Contains(styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), ""), "COUNCIL / HELP") {
@@ -212,7 +209,7 @@ func TestHelpAndContextHint(t *testing.T) {
 		}
 		w := watchingModel(size[0], size[1])
 		watchBar := styleEscape.ReplaceAllString(strings.Join(w.layout().lines, "\n"), "")
-		for _, key := range []string{"←→/tab", "1-9", "verdict", "wheel", "copy", "agent", "judge", "new", "close", "help"} {
+		for _, key := range []string{"Verdict", "Copy", "Go to agent", "New question", "help"} {
 			if !strings.Contains(watchBar, key) {
 				t.Fatalf("watching legend missing %q", key)
 			}
@@ -468,6 +465,7 @@ func manyAskModel(n, w, h int) model {
 func manyWatchModel(n, w, h int) model {
 	m := manyAskModel(n, w, h)
 	m.phase = watching
+	m.page = "run"
 	m.run = &Run{Question: "How should we proceed?", Judge: &Seat{Agent: Agent{Name: "judge", Pane: "judge"}, State: Sending}, Seats: make([]*Seat, n)}
 	for i, a := range m.agents {
 		state := Working
@@ -477,7 +475,6 @@ func manyWatchModel(n, w, h int) model {
 		m.run.Seats[i] = &Seat{Agent: a, State: state, Sent: time.Now().Add(-time.Minute), Answer: "An independent answer."}
 	}
 	m.seat = n - 1
-	m.keepTabVisible()
 	m.refreshAnswer()
 	return m
 }
@@ -495,8 +492,8 @@ func TestManyAgentLayoutsAndDefaults(t *testing.T) {
 			}
 			if n > 6 {
 				plain := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
-				if !strings.Contains(plain, "select seats: a = all idle") {
-					t.Fatal("large-list selection hint missing")
+				if !strings.Contains(plain, fmt.Sprintf("0 of %d", n)) {
+					t.Fatal("large-list seat count missing")
 				}
 			}
 			m.focus = focusSeats
@@ -612,7 +609,7 @@ func TestManyWatchingTabs(t *testing.T) {
 			if m.seat != 0 {
 				t.Fatal("first seat click failed")
 			}
-			if n > 3 {
+			if n > m.runListHeight() {
 				m = clickAction(t, m, "tab-next")
 				if m.seat == 0 {
 					t.Fatal("next-page click did not advance")
@@ -723,17 +720,17 @@ func TestPeerDefaultsAndAsk(t *testing.T) {
 
 func TestPeerStageAndRanking(t *testing.T) {
 	m := peerWatchModel(100, 32)
-	if line := m.stageLine(); !strings.Contains(line, "2 Peer review 1/3") || !strings.Contains(line, "3 Verdict") {
+	if line := m.stageLine(); !strings.Contains(line, "Peer review 1/3") || !strings.Contains(line, "Verdict") {
 		t.Fatalf("review stage: %q", line)
 	}
 	m.run.PeerReview = false
-	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "2 Verdict") {
+	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "Verdict") {
 		t.Fatalf("no-review stage: %q", line)
 	}
 	m.run.PeerReview = true
 	m.run.Reviews = nil
 	m.run.Seats[2].State = Working
-	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "2 Verdict") {
+	if line := m.stageLine(); strings.Contains(line, "Peer review") || !strings.Contains(line, "Verdict") {
 		t.Fatalf("fewer than three answers: %q", line)
 	}
 	m.run.Seats[2].State = Done
@@ -807,4 +804,352 @@ func TestPeerSnapshots(t *testing.T) {
 	}{{"peer-ask", ask}, {"peer-watch", watch}, {"peer-verdict", verdict}} {
 		t.Logf("%s screen:\n%s", tc.name, styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), ""))
 	}
+}
+
+// clickText uses the rendered cells, independently of the action-zone definitions.
+func clickText(t *testing.T, m model, label string) (model, tea.Cmd) {
+	t.Helper()
+	for y, line := range m.layout().lines {
+		plain := styleEscape.ReplaceAllString(line, "")
+		if at := strings.Index(plain, label); at >= 0 {
+			x := lipgloss.Width(plain[:at]) + lipgloss.Width(label)/2
+			next, cmd := m.Update(tea.MouseClickMsg{X: x, Y: y, Button: tea.MouseLeft})
+			return next.(model), cmd
+		}
+	}
+	t.Fatalf("rendered label %q missing", label)
+	return m, nil
+}
+
+func TestNavigationClicksAndKeyboard(t *testing.T) {
+	stubWelcomeServices(t, "prefix+a")
+	for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}} {
+		m := watchingModel(size[0], size[1])
+		run := m.run
+		m, _ = clickText(t, m, "Ask")
+		if m.page != "ask" || m.run != run || !m.input.Focused() {
+			t.Fatal("Ask navigation lost run or input focus")
+		}
+		before := m.input.Value()
+		typed, _ := m.Update(tea.KeyPressMsg{Code: 'r', Text: "r"})
+		m = typed.(model)
+		if m.input.Value() == before {
+			t.Fatal("typing on Ask was routed to run shortcuts")
+		}
+		m, _ = pressKey(m, tea.KeyRight, tea.ModCtrl)
+		if m.page != "runs" {
+			t.Fatal("Ctrl+right did not reach Runs")
+		}
+		m, _ = pressKey(m, tea.KeyRight, tea.ModCtrl)
+		if m.page != "settings" || !m.settingsOpen {
+			t.Fatal("Ctrl+right did not reach Settings")
+		}
+		m, _ = pressKey(m, tea.KeyRight, tea.ModCtrl)
+		if m.page != "run" || m.settingsOpen {
+			t.Fatal("Ctrl+right did not reach current run")
+		}
+		m, _ = pressKey(m, tea.KeyRight, tea.ModCtrl)
+		if m.page != "ask" {
+			t.Fatal("page cycle did not wrap")
+		}
+		m, _ = clickText(t, m, "Runs")
+		if m.page != "runs" {
+			t.Fatal("Runs nav click failed")
+		}
+		m, _ = clickText(t, m, "Settings")
+		if m.page != "settings" {
+			t.Fatal("Settings nav click failed")
+		}
+		m, _ = pressKey(m, tea.KeyLeft, tea.ModCtrl)
+		if m.page != "runs" {
+			t.Fatal("Ctrl+left did not work from Settings")
+		}
+		m = clickAction(t, m, "nav-run")
+		if m.page != "run" {
+			t.Fatal("Current run nav click failed")
+		}
+		assertScreen(t, m)
+	}
+}
+
+func storedUIRun(t *testing.T, question, workspace string, sent time.Time) *Run {
+	t.Helper()
+	r, err := newRun(question, uiAgents(), uiAgents()[1])
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Workspace, r.PeerReview = workspace, true
+	for i, s := range r.Seats {
+		s.Sent = sent
+		s.State = Done
+		answer(s, fmt.Sprintf("Independent answer %d.", i+1))
+	}
+	r.save()
+	return r
+}
+
+func TestRunsNewestFirstOpenAndNoRedispatch(t *testing.T) {
+	sent := fakeAgents(t)
+	older := storedUIRun(t, "Older question", "w1", time.Now().Add(-2*time.Hour))
+	newer := storedUIRun(t, "Newest question", "w1", time.Now().Add(-time.Hour))
+	storedUIRun(t, "Other workspace", "w2", time.Now())
+	m := askingModel(100, 32)
+	m = clickAction(t, m, "nav-runs")
+	if len(m.runs) != 2 || m.runs[0].ID != newer.ID || m.runs[1].ID != older.ID {
+		t.Fatal("Runs did not load workspace history newest-first")
+	}
+	plain := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
+	if strings.Index(plain, "Newest question") > strings.Index(plain, "Older question") || strings.Contains(plain, "Other workspace") {
+		t.Fatal("history render order or workspace filter wrong")
+	}
+	m = clickAction(t, m, "open-run:0")
+	if m.page != "run" || m.run.ID != newer.ID || !m.oldRun || m.currentText() != "Independent answer 1." {
+		t.Fatal("click did not open saved answer")
+	}
+	for i := 0; i < 3; i++ {
+		next, cmd := m.Update(agentsMsg{agents: uiAgents()})
+		m = next.(model)
+		if cmd != nil {
+			t.Fatal("viewing old run scheduled a prompt")
+		}
+	}
+	m, _ = pressKey(m, 'j', 0)
+	if !m.run.Judge.Sent.IsZero() || len(*sent) != 0 {
+		t.Fatal("history viewing prompted agents or judge")
+	}
+	m = clickAction(t, m, "nav-runs")
+	m, _ = pressKey(m, tea.KeyDown, 0)
+	m, _ = pressKey(m, tea.KeyEnter, 0)
+	if m.run.ID != older.ID {
+		t.Fatal("Enter did not open selected historical run")
+	}
+	assertScreen(t, m)
+}
+
+func TestEmptyRunsAndHistoryWheel(t *testing.T) {
+	fakeAgents(t)
+	m := askingModel(60, 24)
+	m = clickAction(t, m, "nav-runs")
+	if !strings.Contains(strings.Join(m.layout().lines, "\n"), "No questions yet in this workspace.") {
+		t.Fatal("empty history message missing")
+	}
+	m, _ = pressKey(m, tea.KeyDown, 0)
+	if m.runCursor != 0 {
+		t.Fatal("empty history cursor became invalid")
+	}
+	for i := 0; i < 30; i++ {
+		m.runs = append(m.runs, &Run{Question: fmt.Sprintf("Question %02d", i), Judge: &Seat{}, Seats: []*Seat{{}}})
+	}
+	next, _ := m.Update(tea.MouseWheelMsg{X: 30, Y: 5, Button: tea.MouseWheelDown})
+	m = next.(model)
+	if m.runTop == 0 || m.runCursor < m.runTop {
+		t.Fatal("history wheel did not scroll and retain a visible selection")
+	}
+	plain := styleEscape.ReplaceAllString(strings.Join(m.layout().lines, "\n"), "")
+	if strings.Contains(plain, "Question 00") {
+		t.Fatal("wheel scrolled state without scrolling rendered history")
+	}
+	assertScreen(t, m)
+}
+
+func TestPrimaryDisabledAndComposedClick(t *testing.T) {
+	fakeAgents(t)
+	for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}} {
+		for _, missing := range []string{"question", "seats"} {
+			m := askingModel(size[0], size[1])
+			if missing == "question" {
+				m.input.SetValue("")
+			} else {
+				m.picked = map[string]bool{}
+			}
+			m, cmd := clickText(t, m, "Ask council")
+			if m.run != nil || m.phase != asking || cmd != nil {
+				t.Fatalf("disabled primary launched with missing %s", missing)
+			}
+		}
+		m := askingModel(size[0], size[1])
+		m, _ = clickText(t, m, "● agy")
+		if m.picked["p1"] {
+			t.Fatal("drawn agent pill click missed composed zone")
+		}
+		m = clickAction(t, m, "judge")
+		if !m.judgeOpen {
+			t.Fatal("judge dropdown did not open")
+		}
+		if !strings.Contains(strings.Join(m.layout().lines, "\n"), "Pick judge") {
+			t.Fatal("rounded picker missing")
+		}
+		m = clickAction(t, m, "judge-pick:1")
+		m, _ = clickText(t, m, "[ ON ]")
+		if m.peerReview {
+			t.Fatal("drawn peer switch click missed composed zone")
+		}
+		m, cmd := clickText(t, m, "Ask council")
+		if m.phase != watching || m.run == nil || cmd == nil || len(m.run.Seats) != 1 {
+			t.Fatal("click at drawn Ask council coordinates did not start run")
+		}
+	}
+}
+
+func TestRedesignSizeMatrix(t *testing.T) {
+	stubWelcomeServices(t, "")
+	for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}} {
+		for _, n := range []int{3, 50} {
+			ask := manyAskModel(n, size[0], size[1])
+			ask.focus, ask.cursor = focusSeats, n/2
+			ask.keepSeatVisible()
+			watch := manyWatchModel(n, size[0], size[1])
+			settings := ask
+			settings.page, settings.settingsOpen = "settings", true
+			runs := ask
+			runs.page = "runs"
+			welcome := ask
+			welcome.phase = welcoming
+			for _, m := range []model{ask, watch, settings, runs, welcome} {
+				assertScreen(t, m)
+				if len(m.layout().lines) != m.h {
+					t.Fatal("frame does not fill pane height")
+				}
+				for _, line := range m.layout().lines {
+					if lipgloss.Width(line) != m.w {
+						t.Fatalf("frame row does not fill width: %q", line)
+					}
+				}
+			}
+			for _, action := range []string{"ask", "judge", "peer-toggle", fmt.Sprintf("toggle:%d", n/2)} {
+				found := false
+				for _, z := range ask.layout().zones {
+					if z.act == action {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%dx%d / %d agents: %s was clipped", size[0], size[1], n, action)
+				}
+			}
+			for _, action := range []string{"copy", "goto", "new", fmt.Sprintf("seat:%d", n-1), fmt.Sprintf("seat:%d", n)} {
+				found := false
+				for _, z := range watch.layout().zones {
+					if z.act == action {
+						found = true
+					}
+				}
+				if !found {
+					t.Fatalf("%dx%d / %d agents: %s was clipped", size[0], size[1], n, action)
+				}
+			}
+		}
+	}
+}
+
+func TestAnswerWrappingAndViewportScroll(t *testing.T) {
+	for _, size := range [][2]int{{60, 24}, {100, 32}, {140, 40}} {
+		m := watchingModel(size[0], size[1])
+		m.seat = 0
+		body := strings.Repeat("The loop stops after every item has been checked; preserve every word.\n", 50) + "FINAL-TOKEN"
+		m.run.Seats[0].Answer = body
+		m.refreshAnswer()
+		vp := m.answer
+		vp.SetHeight(1000)
+		plain := styleEscape.ReplaceAllString(vp.View(), "")
+		if strings.Join(strings.Fields(plain), " ") != strings.Join(strings.Fields(body), " ") {
+			t.Fatal("right pane wrapping lost answer text")
+		}
+		for i := 0; i < 100; i++ {
+			next, _ := m.Update(tea.MouseWheelMsg{X: m.w - 10, Y: 10, Button: tea.MouseWheelDown})
+			m = next.(model)
+		}
+		if !strings.Contains(strings.Join(m.layout().lines, "\n"), "FINAL-TOKEN") {
+			t.Fatal("wheel could not reach the final answer line")
+		}
+		assertScreen(t, m)
+	}
+}
+
+func TestRedesignSnapshots(t *testing.T) {
+	stubWelcomeServices(t, "prefix+a")
+	ask := askingModel(100, 32)
+	ask.picked = map[string]bool{"p1": true, "p2": true, "p3": true}
+	ask.input.SetValue("Is retry.ts correct, and what should we change?")
+	now := time.Now()
+	watch := ask
+	watch.phase, watch.page = watching, "run"
+	watch.run = &Run{Question: ask.input.Value(), Judge: &Seat{Agent: ask.agents[1], State: Sending}, Order: []int{0, 1, 2}, PeerReview: true}
+	for i, a := range ask.agents {
+		watch.run.Seats = append(watch.run.Seats, &Seat{Agent: a, State: Working, Sent: now.Add(-time.Duration(42-i*12) * time.Second)})
+	}
+	watch.run.Seats[0].State, watch.run.Seats[0].Finished = Done, now
+	watch.run.Seats[0].Answer = "The retry loop executes one extra time because it uses i <= attempts.\n\nUse i < attempts and keep the final error as the cause."
+	watch.run.Seats[2].State = Blocked
+	watch.refreshAnswer()
+	verdict := ask
+	verdict.phase, verdict.page = watching, "run"
+	verdict.run = &Run{Question: ask.input.Value(), Judge: &Seat{Agent: ask.agents[1], State: Done, Sent: now.Add(-12 * time.Second), Finished: now, Answer: "## Consensus\nUse a strict loop bound and preserve the final error.\n\n## Final answer\nReplace i <= attempts with i < attempts. Add a test for exactly three calls when attempts is 3."}, Order: []int{0, 1, 2}, Letters: []string{"A", "B", "C"}, PeerReview: true}
+	for i, a := range ask.agents {
+		verdict.run.Seats = append(verdict.run.Seats, &Seat{Agent: a, State: Done, Sent: now.Add(-42 * time.Second), Finished: now.Add(-time.Duration(i*5) * time.Second)})
+		verdict.run.Reviews = append(verdict.run.Reviews, &Seat{Agent: a, State: Done, Sent: now.Add(-20 * time.Second), Finished: now.Add(-10 * time.Second)})
+	}
+	verdict.seat = len(verdict.run.Seats)
+	verdict.refreshAnswer()
+	runs := ask
+	runs.page = "runs"
+	historyDone := *verdict.run
+	historyWaiting := *watch.run
+	historyDone.Seats = append([]*Seat(nil), verdict.run.Seats...)
+	historyWaiting.Seats = append([]*Seat(nil), watch.run.Seats...)
+	firstDone := *historyDone.Seats[0]
+	firstWaiting := *historyWaiting.Seats[0]
+	firstDone.Sent = time.Date(2026, 10, 7, 13, 5, 0, 0, time.Local)
+	firstWaiting.Sent = time.Date(2026, 10, 7, 12, 42, 0, 0, time.Local)
+	historyDone.Seats[0], historyWaiting.Seats[0] = &firstDone, &firstWaiting
+	historyWaiting.Question = "Should we keep the retry policy inside the client?"
+	runs.runs = []*Run{&historyDone, &historyWaiting}
+	settings := ask
+	settings.page, settings.settingsOpen, settings.settings.AutoTab = "settings", true, true
+	settings.shortcut = "prefix+a"
+	narrow := ask
+	narrow.w, narrow.h = 60, 24
+	narrow.resize()
+	var snapshots strings.Builder
+	for _, tc := range []struct {
+		name string
+		m    model
+	}{
+		{"Ask — 3 agents, 100×32", ask}, {"Run — answers in progress, 100×32", watch},
+		{"Run — verdict, 100×32", verdict}, {"Runs — 100×32", runs},
+		{"Settings — 100×32", settings}, {"Ask — 3 agents, 60×24", narrow},
+	} {
+		assertScreen(t, tc.m)
+		plain := styleEscape.ReplaceAllString(strings.Join(tc.m.layout().lines, "\n"), "")
+		t.Logf("%s\n%s", tc.name, plain)
+		fmt.Fprintf(&snapshots, "## %s\n\n```text\n%s\n```\n\n", tc.name, plain)
+	}
+	if path := os.Getenv("COUNCIL_SNAPSHOT_FILE"); path != "" {
+		if err := os.WriteFile(path, []byte(snapshots.String()), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func TestJudgeNowAndSettingsReturnToRun(t *testing.T) {
+	sent := fakeAgents(t)
+	t.Setenv("HERDR_PLUGIN_CONFIG_DIR", t.TempDir())
+	m := askingModel(60, 24)
+	m.run = storedUIRun(t, "Compare these approaches", "w1", time.Now().Add(-time.Minute))
+	for _, s := range m.run.Seats {
+		s.State = Done
+		s.Answer = "A complete answer."
+	}
+	m.phase, m.page = watching, "run"
+	m.refreshAnswer()
+	m = clickAction(t, m, "settings")
+	m = clickAction(t, m, "settings-close")
+	if m.page != "run" || m.settingsOpen {
+		t.Fatal("Settings Back lost the current run page")
+	}
+	m, _ = clickText(t, m, "Judge now")
+	if !m.onVerdict() || m.run.Judge.Sent.IsZero() || len(*sent) != 1 {
+		t.Fatal("Judge now did not start the judge via the stub")
+	}
+	assertScreen(t, m)
 }

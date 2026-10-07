@@ -16,18 +16,8 @@ import (
 	"github.com/atotto/clipboard"
 )
 
-var (
-	dim     = lipgloss.NewStyle().Foreground(lipgloss.Color("#6e7681"))
-	text    = lipgloss.NewStyle().Foreground(lipgloss.Color("#c9d1d9"))
-	bold    = lipgloss.NewStyle().Bold(true).Foreground(lipgloss.Color("#e6edf3"))
-	accent  = lipgloss.NewStyle().Foreground(lipgloss.Color("#9cc7ff"))
-	good    = lipgloss.NewStyle().Foreground(lipgloss.Color("#7ee787"))
-	warn    = lipgloss.NewStyle().Foreground(lipgloss.Color("#e3b341"))
-	bad     = lipgloss.NewStyle().Foreground(lipgloss.Color("#ff7b72"))
-	button  = lipgloss.NewStyle().Foreground(lipgloss.Color("#e6edf3")).Background(lipgloss.Color("#30363d")).Padding(0, 1)
-	primary = lipgloss.NewStyle().Foreground(lipgloss.Color("#0d1117")).Background(lipgloss.Color("#9cc7ff")).Bold(true).Padding(0, 1)
-	spinner = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
-)
+// UI indirection lets copy tests avoid modifying the user's clipboard.
+var writeClipboard = clipboard.WriteAll
 
 type phase int
 
@@ -84,7 +74,6 @@ type model struct {
 
 	run            *Run
 	seat           int // len(run.Seats) selects the verdict
-	tabStart       int
 	sawVerdict     bool
 	showReview     bool
 	answer         viewport.Model
@@ -96,16 +85,29 @@ type model struct {
 	welcomeFocus   int
 	settingsOpen   bool
 	settingsFocus  int
+	settingsReturn string
+	page           string
+	runs           []*Run
+	runCursor      int
+	runTop         int
+	oldRun         bool // History is read-only: poll can start reviews and the judge.
 }
 
 func newModel(workspace string) model {
 	ta := textarea.New()
 	ta.Placeholder = "What should the council weigh in on?"
-	ta.Prompt = "┃ "
+	ta.Prompt = ""
 	ta.ShowLineNumbers = false
+	styles := textarea.DefaultDarkStyles()
+	styles.Focused.Text, styles.Blurred.Text = text, text
+	styles.Focused.CursorLine, styles.Blurred.CursorLine = text, text
+	styles.Focused.Placeholder, styles.Blurred.Placeholder = dim, dim
+	styles.Focused.EndOfBuffer, styles.Blurred.EndOfBuffer = dim, dim
+	styles.Cursor.Color = lipgloss.Color(accentHex)
+	ta.SetStyles(styles)
 	ta.SetHeight(3)
 	ta.Focus()
-	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, focus: focusQuestion, peerReview: true, answer: viewport.New()}
+	return model{workspace: workspace, input: ta, picked: map[string]bool{}, judge: -1, focus: focusQuestion, peerReview: true, answer: viewport.New(), page: "ask"}
 }
 
 func fetchAgents(ws string) tea.Cmd {
@@ -122,13 +124,8 @@ func tick() tea.Cmd {
 func (m model) Init() tea.Cmd { return tea.Batch(fetchAgents(m.workspace), tick()) }
 
 func (m *model) resize() {
-	formWidth := m.w
-	if artX, ok := m.artPosition(); ok {
-		formWidth = artX - 3
-	}
-	m.input.SetWidth(max(20, formWidth-4))
-	m.answer.SetWidth(max(20, m.w-2))
-	m.answer.SetHeight(max(3, m.h-10))
+	contentWidth, _ := m.contentSize()
+	m.input.SetWidth(max(20, contentWidth-8))
 	m.refreshAnswer()
 }
 
@@ -148,6 +145,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		if m.help {
 			return m, nil
+		}
+		if m.phase != welcoming && !m.judgeOpen {
+			switch key.String() {
+			case "ctrl+left":
+				return m.switchPage(-1)
+			case "ctrl+right":
+				return m.switchPage(1)
+			}
 		}
 	}
 	if m.help {
@@ -232,7 +237,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cursor = max(0, len(m.agents)-1)
 		}
 		m.keepSeatVisible()
-		if m.run != nil {
+		if m.run != nil && !m.oldRun {
 			status := map[string]string{}
 			for _, a := range m.agents {
 				status[a.Pane] = a.Status
@@ -274,6 +279,15 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.MouseWheelMsg:
 		mo := msg.Mouse()
+		if m.page == "runs" {
+			if mo.Button == tea.MouseWheelUp {
+				m.runTop = max(0, m.runTop-2)
+			} else {
+				m.runTop = min(max(0, len(m.runs)-m.runsListHeight()), m.runTop+2)
+			}
+			m.runCursor = min(max(m.runCursor, m.runTop), min(max(0, len(m.runs)-1), m.runTop+m.runsListHeight()-1))
+			return m, nil
+		}
 		if m.judgeOpen {
 			if mo.Button == tea.MouseWheelUp {
 				m.judgeCursor = max(0, m.judgeCursor-1)
@@ -283,7 +297,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.keepJudgeVisible()
 			return m, nil
 		}
-		if m.phase == asking && (m.focus == focusSeats || m.wheelOnSeats(mo.X, mo.Y)) {
+		if m.page == "ask" && (m.focus == focusSeats || m.wheelOnSeats(mo.X, mo.Y)) {
 			if mo.Button == tea.MouseWheelUp {
 				m.seatTop = max(0, m.seatTop-2)
 			} else {
@@ -294,7 +308,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return m, nil
 		}
-		if m.phase == watching {
+		if m.page == "run" && m.run != nil {
 			var cmd tea.Cmd
 			m.answer, cmd = m.answer.Update(msg)
 			return m, cmd
@@ -305,6 +319,14 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.String() == "ctrl+c" {
 			return m, tea.Quit
 		}
+		if m.phase != welcoming {
+			if m.page == "runs" {
+				return m.updateRuns(msg)
+			}
+			if m.page == "ask" && m.phase == watching {
+				return m.updateAsking(msg)
+			}
+		}
 		if m.phase == welcoming {
 			return m.updateWelcome(msg)
 		}
@@ -313,7 +335,7 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.updateWatching(msg)
 	}
-	if m.phase == asking && m.focus == focusQuestion {
+	if m.page == "ask" && m.focus == focusQuestion {
 		var cmd tea.Cmd
 		m.input, cmd = m.input.Update(msg)
 		return m, cmd
@@ -324,9 +346,43 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // do runs one named action: shared by keys and mouse clicks.
 func (m model) do(act string) (tea.Model, tea.Cmd) {
 	switch {
+	case act == "nav-ask":
+		m.page, m.settingsOpen = "ask", false
+		m.focus = focusQuestion
+		m.resize()
+		return m, m.input.Focus()
+	case act == "nav-runs":
+		m.page, m.settingsOpen = "runs", false
+		m.runs = listRuns(m.workspace)
+		m.runCursor = min(max(0, m.runCursor), max(0, len(m.runs)-1))
+		m.runTop = min(m.runTop, m.runCursor)
+		m.input.Blur()
+		return m, nil
+	case act == "nav-settings":
+		if m.page != "settings" {
+			m.settingsReturn = m.page
+		}
+		m.page, m.settingsOpen = "settings", true
+		m.settingsFocus, m.preferenceNote = 0, ""
+		m.input.Blur()
+		return m, nil
+	case act == "nav-run" && m.run != nil:
+		m.page, m.settingsOpen = "run", false
+		m.refreshAnswer()
+		return m, nil
+	case strings.HasPrefix(act, "open-run:"):
+		var i int
+		fmt.Sscanf(act, "open-run:%d", &i)
+		if i >= 0 && i < len(m.runs) {
+			m.run, m.phase, m.page, m.seat, m.oldRun = m.runs[i], watching, "run", 0, true
+			m.showReview = false
+			m.sawVerdict = m.run.Judge != nil && m.run.Judge.State == Done
+			m.refreshAnswer()
+		}
+		return m, nil
 	case strings.HasPrefix(act, "welcome-") || strings.HasPrefix(act, "settings-"):
 		m = m.preferenceAction(act)
-		if act == "settings-close" && m.focus == focusQuestion {
+		if act == "settings-close" && m.page == "ask" && m.focus == focusQuestion {
 			return m, m.input.Focus()
 		}
 		return m, nil
@@ -336,12 +392,11 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 		m.help = true
 		return m, nil
 	case act == "settings":
-		m.settingsOpen = true
-		m.settingsFocus = 0
-		m.preferenceNote = ""
-		m.input.Blur()
-		return m, nil
+		return m.do("nav-settings")
 	case act == "ask":
+		if strings.TrimSpace(m.input.Value()) == "" || m.selectedCount() == 0 {
+			return m, nil
+		}
 		m.focus = focusAsk
 		m.input.Blur()
 		return m.ask()
@@ -406,20 +461,18 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 	case strings.HasPrefix(act, "seat:"):
 		fmt.Sscanf(act, "seat:%d", &m.seat)
 		m.showReview = false
-		m.keepTabVisible()
 	case act == "review", act == "answer":
 		m.showReview = act == "review"
 		m.answer.GotoTop()
 	case act == "tab-prev", act == "tab-next":
-		step := m.tabPageSize()
+		step := m.runListHeight()
 		if act == "tab-prev" {
 			step = -step
 		}
 		m.seat = min(len(m.run.Seats)-1, max(0, m.seat+step))
 		m.showReview = false
-		m.keepTabVisible()
 	case act == "copy":
-		if body := m.currentText(); body != "" && clipboard.WriteAll(body) == nil {
+		if body := m.currentText(); body != "" && writeClipboard(body) == nil {
 			m.flash = "copied"
 		}
 		return m, nil
@@ -432,7 +485,7 @@ func (m model) do(act string) (tea.Model, tea.Cmd) {
 			return m, tea.Quit
 		}
 	case act == "judge-now":
-		if m.run.answered() >= 2 && m.run.Judge.Sent.IsZero() {
+		if !m.oldRun && m.run != nil && m.run.Judge != nil && m.run.answered() >= 2 && m.run.Judge.Sent.IsZero() {
 			m.run.startJudge()
 			m.seat = len(m.run.Seats)
 		}
@@ -483,8 +536,8 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab":
 		return m.moveAskFocus(-1)
 	case "up", "k":
-		if m.focus == focusSeats && m.cursor > 0 {
-			m.cursor--
+		if m.focus == focusSeats {
+			m.cursor = max(0, m.cursor-1)
 			m.keepSeatVisible()
 			return m, nil
 		}
@@ -492,8 +545,8 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.moveAskFocus(-1)
 		}
 	case "down", "j":
-		if m.focus == focusSeats && m.cursor < len(m.agents)-1 {
-			m.cursor++
+		if m.focus == focusSeats {
+			m.cursor = min(max(0, len(m.agents)-1), m.cursor+1)
 			m.keepSeatVisible()
 			return m, nil
 		}
@@ -524,6 +577,15 @@ func (m model) updateAsking(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			return m.do("peer-toggle")
 		}
 	case "left", "right":
+		if m.focus == focusSeats {
+			step := 1
+			if msg.String() == "left" {
+				step = -1
+			}
+			m.cursor = min(max(0, len(m.agents)-1), max(0, m.cursor+step))
+			m.keepSeatVisible()
+			return m, nil
+		}
 		if m.focus == focusJudge {
 			if len(m.agents) > 0 {
 				step := 1
@@ -584,7 +646,7 @@ func (m model) ask() (tea.Model, tea.Cmd) {
 	r.Workspace = m.workspace
 	r.PeerReview = m.peerReview
 	send := r.dispatch()
-	m.run, m.seat, m.phase, m.flash, m.sawVerdict = r, 0, watching, "", false
+	m.run, m.seat, m.phase, m.page, m.flash, m.sawVerdict, m.oldRun = r, 0, watching, "run", "", false, false
 	m.refreshAnswer()
 	return m, send
 }
@@ -599,9 +661,9 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	case "shift+tab", "left", "h":
 		m.seat = (m.seat + n - 1) % n
 	case "[", "pgup":
-		m.seat = max(0, m.seat-m.tabPageSize())
+		m.seat = max(0, m.seat-m.runListHeight())
 	case "]", "pgdown":
-		m.seat = min(n-1, m.seat+m.tabPageSize())
+		m.seat = min(n-1, m.seat+m.runListHeight())
 	case "v":
 		m.seat = len(m.run.Seats)
 	case "r":
@@ -630,7 +692,6 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 	m.flash = ""
 	m.showReview = false
-	m.keepTabVisible()
 	m.refreshAnswer()
 	return m, nil
 }
@@ -679,9 +740,14 @@ func (m *model) refreshAnswer() {
 	if m.run == nil {
 		return
 	}
-	wrap := text.Width(max(20, m.w-4))
+	width, height := m.contentSize()
+	_, rightWidth := runPaneWidths(width)
+	m.answer.SetWidth(max(1, rightWidth-2))
+	header := m.runHeader(rightWidth)
+	actions := m.runActions(rightWidth)
+	m.answer.SetHeight(max(1, height-len(header.lines)-len(actions.lines)-1))
 	if m.onVerdict() {
-		m.answer.SetContent(m.verdictBody(wrap))
+		m.answer.SetContent(m.verdictBody(m.answer.Width()))
 		return
 	}
 	s := m.run.Seats[m.seat]
@@ -691,7 +757,8 @@ func (m *model) refreshAnswer() {
 	var body string
 	switch s.State {
 	case Done:
-		body = wrap.Render(s.Answer)
+		m.answer.SetContent(markdownBody(s.Answer, m.answer.Width()))
+		return
 	case Working, Sending:
 		body = dim.Render(s.Agent.Name + " is thinking on its own; the others' answers stay hidden from it.")
 	case Blocked:
@@ -703,14 +770,17 @@ func (m *model) refreshAnswer() {
 	case Failed:
 		body = bad.Render("could not reach " + s.Agent.Name + ": " + s.Err)
 	}
-	m.answer.SetContent(body)
+	m.answer.SetContent(wrapBody(body, m.answer.Width()))
 }
 
-func (m model) verdictStatus(wrap lipgloss.Style) string {
+func (m model) verdictStatus(width int) string {
 	r, j := m.run, m.run.Judge
+	if j == nil {
+		return dim.Render("No verdict is available for this run.")
+	}
 	switch {
 	case j.State == Done:
-		return wrap.Render(j.Answer)
+		return markdownBody(j.Answer, width)
 	case j.State == Failed:
 		return bad.Render("the judge could not be reached: " + j.Err)
 	case !j.Sent.IsZero() && j.State == Blocked:
@@ -725,26 +795,6 @@ func (m model) verdictStatus(wrap lipgloss.Style) string {
 		return dim.Render(fmt.Sprintf("%s will judge once every seat is done. Click Judge now (or press j) to start with the %d answers in.", j.Agent.Name, r.answered()))
 	default:
 		return dim.Render(j.Agent.Name + " will judge the answers blind once the seats are done.")
-	}
-}
-
-func badge(s *Seat, frame int, now time.Time) string {
-	el := fmt.Sprintf("%ds", int(s.Elapsed(now).Seconds()))
-	switch s.State {
-	case Done:
-		return good.Render("✓") + " " + dim.Render(el)
-	case Working:
-		return accent.Render(spinner[frame%len(spinner)]) + " " + dim.Render(el)
-	case Sending:
-		return dim.Render("·")
-	case Blocked:
-		return warn.Render("! waiting")
-	case Silent:
-		return warn.Render("? no answer")
-	case Late:
-		return warn.Render("… late")
-	default:
-		return bad.Render("× failed")
 	}
 }
 
@@ -780,199 +830,6 @@ func (s *screen) raw(block, action string) {
 		}
 		s.lines = append(s.lines, l)
 	}
-}
-
-// layout builds the screen and its click zones together, so clicks always match what's drawn.
-func (m model) layout() screen {
-	if m.help {
-		base := m
-		base.help = false
-		return helpOverlay(base.layout(), m.w, m.h)
-	}
-	if m.settingsOpen {
-		base := m
-		base.settingsOpen = false
-		return m.settingsOverlay(base.layout())
-	}
-	if m.judgeOpen {
-		base := m
-		base.judgeOpen = false
-		return m.judgePickerOverlay(base.layout())
-	}
-	if m.phase == welcoming {
-		return m.welcomeLayout()
-	}
-	var sc screen
-	width := max(20, m.w)
-	rule := dim.Render(" " + strings.Repeat("─", width-2))
-	if m.phase == asking {
-		formWidth := width
-		artX, showArt := m.artPosition()
-		if showArt {
-			formWidth = artX - 3
-		}
-		pause := func() {
-			sc.blank()
-			if m.h >= 30 && len(m.agents) <= 3 {
-				sc.blank()
-			}
-		}
-		sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten("  /  independent answers, blind verdict", formWidth-9))))
-		sc.add(seg(" " + dim.Render(shorten("Ask once. Compare independent views.", formWidth-1))))
-		pause()
-		addAskHeading(&sc, m.focus == focusQuestion, "01", "Question", "enter", "ask", formWidth)
-		sc.raw(indent(m.input.View()), "input")
-		pause()
-		addAskHeading(&sc, m.focus == focusSeats, "02", "Seats", "space", "select", formWidth)
-		sc.add(seg("     " + dim.Render(shorten(m.seatSummary(), formWidth-5))))
-		sc.add(seg("     "), act(accent.Render("all"), "seat-all"), seg(dim.Render(" / ")), act(accent.Render("none"), "seat-none"), seg("  "+dim.Render(shorten(m.seatHint(), max(0, formWidth-20)))))
-		if m.agentErr != "" {
-			sc.add(seg(" " + bad.Render(shorten(m.agentErr, formWidth-2))))
-		}
-		if len(m.agents) == 0 && m.agentErr == "" {
-			sc.add(seg(dim.Render("   no agents in this workspace yet")))
-		}
-		top, bottom := m.visibleSeats()
-		if top > 0 {
-			sc.add(seg("     " + dim.Render(fmt.Sprintf("↑ %d more", top))))
-		} else {
-			sc.add(seg(" "))
-		}
-		for i := top; i < bottom; i++ {
-			a := m.agents[i]
-			box := dim.Render("[ ]")
-			if m.picked[a.Pane] {
-				box = accent.Render("[x]")
-			}
-			pre := "   "
-			if m.focus == focusSeats && i == m.cursor {
-				pre = accent.Render(" › ")
-			}
-			sc.add(act(shorten(pre+box+" "+m.agentRow(i, formWidth-8), formWidth), fmt.Sprintf("toggle:%d", i)))
-		}
-		if bottom < len(m.agents) {
-			sc.add(seg("     " + dim.Render(fmt.Sprintf("↓ %d more", len(m.agents)-bottom))))
-		} else {
-			sc.add(seg(" "))
-		}
-		pause()
-		addAskHeading(&sc, m.focus == focusJudge, "03", "Judge", "←→", "cycle", formWidth)
-		sc.add(seg("     " + dim.Render(shorten("Reads answers as A/B/C, writes the verdict.", formWidth-5))))
-		judge := "none"
-		if m.judge >= 0 && m.judge < len(m.agents) {
-			judge = shorten(m.agents[m.judge].Name, 14)
-		}
-		judgeStyle := button
-		if m.focus == focusJudge {
-			judgeStyle = primary
-		}
-		sc.add(seg("     "), act(judgeStyle.Render("‹ "+judge+" ›  Pick judge"), "judge"))
-		peerBox := "[ ]"
-		if m.peerReview {
-			peerBox = "[x]"
-		}
-		peerStyle := text
-		if m.focus == focusPeer {
-			peerStyle = accent
-		}
-		sc.add(act(askFocusMark(m.focus == focusPeer)+peerStyle.Render(peerBox+" Peer review"), "peer-toggle"))
-		sc.add(seg("     " + dim.Render(shorten("Ranks others, never itself; slower, sharper verdict.", formWidth-5))))
-		pause()
-		askStyle, closeStyle := button, button
-		if m.focus == focusAsk {
-			askStyle = primary
-		}
-		if m.focus == focusClose {
-			closeStyle = primary
-		}
-		askLabel := "Ask the council"
-		if m.confirmAsk {
-			askLabel = fmt.Sprintf("Ask %d agents? Confirm", m.selectedCount())
-		}
-		sc.add(seg(" "), act(askFocusMark(m.focus == focusAsk)+askStyle.Render(askLabel), "ask"), seg("  "), act(askFocusMark(m.focus == focusClose)+closeStyle.Render("Close"), "close"), seg("  "), act(button.Render("⚙ Settings"), "settings"))
-		if m.confirmAsk {
-			sc.add(seg(" " + warn.Render(shorten("Press Enter or click Confirm to send · Esc to cancel", formWidth-2))))
-		}
-		if m.flash != "" {
-			sc.add(seg(" " + warn.Render(shorten(m.flash, formWidth-2))))
-		}
-		legend := askLegend(m.focus, width)
-		for len(sc.lines) < m.h-len(legend) {
-			sc.blank()
-		}
-		for _, row := range legend {
-			sc.add(row...)
-		}
-		if showArt {
-			placeCouncilArt(&sc, artX)
-		}
-		return sc
-	}
-
-	now := time.Now()
-	r := m.run
-	head := fmt.Sprintf("  /  %d of %d seats answered  /  judge: %s", r.answered(), len(r.Seats), r.Judge.Agent.Name)
-	sc.add(seg(" "+bold.Render("COUNCIL")), seg(dim.Render(shorten(head, width-10))))
-	q := oneLine(r.Question)
-	sc.add(seg(dim.Render(" Q  ")), seg(text.Render(shorten(q, width-5))))
-	sc.add(seg(dim.Render(shorten(" Seats answer independently. The judge sees anonymous letters.", width))))
-	sc.add(seg(" " + dim.Render(shorten(m.stageLine(), width-2))))
-	for _, row := range m.tabRows(now, width) {
-		sc.add(row...)
-	}
-	sc.add(seg(" " + dim.Render(m.statusSummary())))
-	sc.add(seg(rule))
-	if m.onVerdict() {
-		sc.add(seg(" " + accent.Render(".----< VERDICT >----.") + "  " + bold.Render(verdictState(r.Judge))))
-		if r.Judge.State == Done {
-			sc.add(seg(" " + good.Render("REVEALED") + "  " + text.Render(shorten(strings.Join(r.Reveal(), "  ·  "), width-12))))
-		}
-	} else {
-		label := "  /  " + r.Seats[m.seat].Agent.Name
-		if m.reviewAvailable() {
-			label += "  ·  " + m.reviewStatus(now)
-		}
-		sc.add(seg(" "+bold.Render("ANSWER")), seg(dim.Render(shorten(label, width-10))))
-		if m.reviewAvailable() {
-			answerStyle, reviewStyle := dim, dim
-			if m.showReview {
-				reviewStyle = accent
-			} else {
-				answerStyle = accent
-			}
-			sc.add(seg(" "), act(answerStyle.Render("Answer"), "answer"), seg(dim.Render("  |  ")), act(reviewStyle.Render("Review"), "review"), seg(dim.Render("  ·  r switch")))
-		}
-	}
-	// Reserve the footer first, so wrapped tabs and the reveal never push buttons off-screen.
-	legend := watchLegend(width)
-	available := max(3, m.h-len(sc.lines)-3-len(legend))
-	vp := m.answer
-	vp.SetHeight(available)
-	sc.raw(indent(vp.View()), "")
-	sc.add(seg(rule))
-	btns := [][2]string{seg(" "), act(button.Render("Copy"), "copy"), seg(" "), act(button.Render("Go to agent"), "goto")}
-	if r.answered() >= 2 && r.Judge.Sent.IsZero() {
-		btns = append(btns, seg(" "), act(primary.Render("Judge now"), "judge-now"))
-	}
-	btns = append(btns, seg(" "), act(button.Render("New question"), "new"), seg(" "), act(button.Render("Close"), "close"))
-	sc.add(btns...)
-	if m.flash != "" {
-		sc.add(seg(" " + warn.Render(shorten(m.flash, width-2))))
-	} else {
-		sc.add(seg(""))
-	}
-	for _, row := range legend {
-		sc.add(row...)
-	}
-	return sc
-}
-
-func indent(block string) string {
-	ls := strings.Split(block, "\n")
-	for i := range ls {
-		ls[i] = " " + ls[i]
-	}
-	return strings.Join(ls, "\n")
 }
 
 func (m model) View() tea.View {
