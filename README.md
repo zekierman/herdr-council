@@ -1,9 +1,5 @@
 # Council
 
-<p align="center"><img src="docs/council.webp" alt="Council: one question goes to every agent, names are hidden, peers rank the answers, a blind judge weighs them, then the names are revealed" width="100%"></p>
-
-With sound:
-
 https://github.com/user-attachments/assets/5e04b781-c49b-4102-8fe3-ec7930d38a13
 
 A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every coding agent in your workspace, let each answer on its own, then have a judge agent weigh the answers blind and write one verdict.
@@ -17,9 +13,9 @@ Different models notice different things. Where they agree you can trust the ans
 
 ## See it work
 
-A real run in herdr: three agents (Antigravity, Claude Code, Codex) review a small `retry.ts`, rank each other's answers, and Claude judges blind. Recorded with the mouse; the wait for answers is sped up 16×.
+A real run in herdr, 30 seconds: three agents review a small `retry.ts`, rank each other's answers, Claude judges blind, and the run lands in **Runs**. The wait for answers is sped up.
 
-https://github.com/user-attachments/assets/123ce53b-2bc3-4830-9188-463ca6d69b86
+https://github.com/user-attachments/assets/678af09f-8d15-4878-bc8a-9a5f1c2fcdc9
 
 ## Install
 
