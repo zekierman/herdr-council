@@ -39,7 +39,13 @@ The first time it opens, Council explains itself and asks how you want to come b
 
 herdr doesn't let plugins add items to its right-click menu, so Council isn't there.
 
-Inside Council, `tab` moves between sections and `?` lists every key. Everything is clickable too. Closing the popup doesn't stop anything: the agents keep writing, and reopening Council shows the latest question.
+Council looks like a small desktop app: a sidebar with **Ask**, **Runs** and **Settings**, and one content area.
+
+- **Ask:** write the question, pick the agents, choose the judge from a dropdown, turn peer review on or off.
+- **Current run:** a list of agents with live status on the left, the selected answer, review or verdict on the right.
+- **Runs:** every question asked in this workspace, newest first; open any of them again.
+
+Everything is clickable. With the keyboard, `ctrl+←/→` switches pages, `tab` moves between controls and `?` lists every key. Closing Council doesn't stop anything: the agents keep writing, and reopening it shows the latest question.
 
 ## How answers are collected
 
