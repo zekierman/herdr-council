@@ -520,7 +520,11 @@ func (m model) runPage(sc *screen, width, height int) {
 	} else if m.run.Judge == nil || (m.run.Judge.State == Silent) {
 		starStyle = dim
 	}
-	verdict := " " + starStyle.Render("◆") + " Verdict " + dim.Render(seatStateLabel(m.run.Judge))
+	mark, vElapsed := starStyle.Render("◆"), ""
+	if j := m.run.Judge; judging(j) { // the judge is working: spin and count, like the seats above
+		mark, vElapsed = stateMark(j, m.frame), fmt.Sprintf(" %ds", int(j.Elapsed(now).Seconds()))
+	}
+	verdict := " " + mark + " Verdict " + dim.Render(seatStateLabel(m.run.Judge)+vElapsed)
 	if m.onVerdict() {
 		verdict = accent.Render("▸") + verdict
 	}

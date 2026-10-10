@@ -118,7 +118,7 @@ func fetchAgents(ws string) tea.Cmd {
 }
 
 func tick() tea.Cmd {
-	return tea.Tick(500*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
+	return tea.Tick(125*time.Millisecond, func(t time.Time) tea.Msg { return tickMsg(t) })
 }
 
 func (m model) Init() tea.Cmd { return tea.Batch(fetchAgents(m.workspace), tick()) }
@@ -260,8 +260,11 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		m.frame++
 		cmds := []tea.Cmd{tick()}
-		if m.frame%2 == 0 { // herdr status once a second
+		if m.frame%8 == 0 { // herdr status once a second
 			cmds = append(cmds, fetchAgents(m.workspace))
+		}
+		if m.onVerdict() && judging(m.run.Judge) {
+			m.refreshAnswer() // the verdict text shows a spinner and the seconds so far
 		}
 		return m, tea.Batch(cmds...)
 
@@ -696,6 +699,11 @@ func (m model) updateWatching(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+// judging reports a judge that has been sent its task and is still working on it.
+func judging(j *Seat) bool {
+	return j != nil && !j.Sent.IsZero() && (j.State == Working || j.State == Sending)
+}
+
 func (m model) onVerdict() bool { return m.run != nil && m.seat >= len(m.run.Seats) }
 
 func (m model) currentSeat() *Seat {
@@ -788,7 +796,7 @@ func (m model) verdictStatus(width int) string {
 	case !j.Sent.IsZero() && j.State.settled():
 		return warn.Render(j.Agent.Name + " went quiet without writing the verdict.")
 	case !j.Sent.IsZero():
-		return dim.Render(fmt.Sprintf("%s is weighing %d answers blind: it sees them as A, B, C… without names.", j.Agent.Name, r.answered()))
+		return accent.Render(spinner[m.frame%len(spinner)]) + dim.Render(fmt.Sprintf(" %s is weighing %d answers blind (%ds): it sees them as A, B, C… without names.", j.Agent.Name, r.answered(), int(j.Elapsed(time.Now()).Seconds())))
 	case r.seatsSettled() && r.answered() < 2:
 		return dim.Render("A verdict needs at least two answers to compare.")
 	case r.answered() >= 2:
