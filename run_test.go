@@ -144,3 +144,12 @@ func TestLatestRunResumes(t *testing.T) {
 		t.Fatal("an old run should not resume")
 	}
 }
+
+func TestJudgePromptAsksClaimByClaim(t *testing.T) {
+	r := &Run{ID: "x", Dir: "d", Judge: &Seat{Dir: "j", File: "v.md", Marker: "DONE"}}
+	for _, want := range []string{"claim by claim", "real reasoning conflict", "## Final answer"} {
+		if !strings.Contains(r.judgePrompt(), want) {
+			t.Errorf("judge prompt missing %q", want)
+		}
+	}
+}

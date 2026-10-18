@@ -7,7 +7,7 @@ A [herdr](https://github.com/herdrdev/herdr) plugin. Put one question to every c
 1. **Ask.** Write the question once.
 2. **Seats answer alone.** Each selected agent (Claude Code, Codex, Antigravity, ...) gets the question in its own pane and writes its answer to its own folder. No seat sees another's answer.
 3. **Peer review.** Each agent ranks the other agents' answers, anonymised as A, B, C, and never its own. The rankings are averaged. (On by default for up to six seats; it doubles the time.)
-4. **Blind verdict.** A judge agent reads the anonymised answers and the peer ranking, with names hidden and order shuffled, and writes: consensus, conflicts, what was missed or risky, and a final answer. Then the names are revealed.
+4. **Blind verdict.** A judge agent reads the anonymised answers and the peer ranking, with names hidden and order shuffled, and writes: consensus, conflicts claim by claim (who asserts, who contradicts, who is silent, and whether it is a real disagreement or only wording), what was missed or risky, and a final answer. Then the names are revealed.
 
 Different models notice different things. Where they agree you can trust the answer more; where they disagree there is usually a risk worth knowing about. Council works with whatever agents are running in the workspace, two or fifty.
 
@@ -42,6 +42,10 @@ Council looks like a small desktop app: a sidebar with **Ask**, **Runs** and **S
 - **Runs:** every question asked in this workspace, newest first; open any of them again.
 
 Everything is clickable. With the keyboard, `ctrl+←/→` switches pages, `tab` moves between controls and `?` lists every key. Closing Council doesn't stop anything: the agents keep writing, and reopening it shows the latest question.
+
+## Fairness
+
+Every seat gets the same prompt, and the judge sees answers under shuffled letters with names hidden. Council can't equalise what each agent brings on its own (its CLI, model, tools and system prompt), so differences between seats can still come from the setup rather than the reasoning.
 
 ## How answers are collected
 
